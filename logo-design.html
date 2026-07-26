@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>星衍医学 AI Logo 设计</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+            background: #0a0e27;
+            color: #fff;
+            padding: 3rem 2rem;
+        }
+
+        h1 {
+            text-align: center;
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+            background: linear-gradient(135deg, #00d4ff, #00ffcc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #b8c5d6;
+            margin-bottom: 3rem;
+            font-size: 0.95rem;
+        }
+
+        .logo-grid {
+            max-width: 1200px;
+            margin: 0 auto;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            gap: 2rem;
+        }
+
+        .logo-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(0,212,255,0.1);
+            border-radius: 20px;
+            padding: 2.5rem;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .logo-card:hover {
+            border-color: rgba(0,212,255,0.3);
+            transform: translateY(-5px);
+            box-shadow: 0 20px 40px rgba(0,212,255,0.1);
+        }
+
+        .logo-card h2 {
+            font-size: 1.1rem;
+            color: #00d4ff;
+            margin-bottom: 0.5rem;
+        }
+
+        .logo-card .desc {
+            color: #b8c5d6;
+            font-size: 0.85rem;
+            margin-bottom: 2rem;
+            min-height: 2.5em;
+        }
+
+        .logo-preview {
+            background: #fff;
+            border-radius: 16px;
+            padding: 2.5rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 200px;
+        }
+
+        .logo-preview.dark {
+            background: #0a0e27;
+        }
+
+        .logo-preview.gradient-bg {
+            background: linear-gradient(135deg, #0a0e27, #1a1e3a);
+        }
+
+        .size-options {
+            display: flex;
+            gap: 0.8rem;
+            justify-content: center;
+            align-items: flex-end;
+            margin-bottom: 1.5rem;
+        }
+
+        .size-label {
+            color: #b8c5d6;
+            font-size: 0.75rem;
+        }
+
+        .tag {
+            display: inline-block;
+            padding: 0.25rem 0.8rem;
+            background: rgba(0,212,255,0.1);
+            border: 1px solid rgba(0,212,255,0.2);
+            border-radius: 20px;
+            color: #00d4ff;
+            font-size: 0.75rem;
+            margin: 0 0.2rem;
+        }
+
+        /* ===== Logo 1: 星芒十字 ===== */
+        .logo-1 { display: flex; align-items: center; gap: 14px; }
+        .logo-1 .icon { flex-shrink: 0; }
+
+        /* ===== Logo 2: 衍变之星 ===== */
+        .logo-2 { display: flex; align-items: center; gap: 14px; }
+        .logo-2 .icon { flex-shrink: 0; }
+
+        /* ===== Logo 3: 星核 ===== */
+        .logo-3 { display: flex; align-items: center; gap: 14px; }
+        .logo-3 .icon { flex-shrink: 0; }
+
+        /* ===== Logo 4: 徽章式 ===== */
+        .logo-4 { text-align: center; }
+        .logo-4 .icon { margin-bottom: 8px; }
+
+        /* ===== Logo 5: 极简 ===== */
+        .logo-5 { display: flex; align-items: center; gap: 12px; }
+        .logo-5 .icon { flex-shrink: 0; }
+
+        .export-hint {
+            color: #6b7280;
+            font-size: 0.8rem;
+            margin-top: 0.5rem;
+        }
+
+        /* ===== Favicon 预览 ===== */
+        .favicon-row {
+            display: flex;
+            gap: 1rem;
+            justify-content: center;
+            align-items: flex-end;
+            margin-top: 1rem;
+        }
+
+        .favicon-item { text-align: center; }
+        .favicon-item span {
+            display: block;
+            color: #b8c5d6;
+            font-size: 0.7rem;
+            margin-top: 0.3rem;
+        }
+
+        @media (max-width: 480px) {
+            .logo-grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <h1>⭐ 星衍医学 Logo 设计方案</h1>
+    <p class="subtitle">点击任意 Logo 下方的 SVG 代码即可复制，可直接粘贴到 HTML 中使用</p>
+
+    <div class="logo-grid">
+
+        <!-- ==================== Logo 1: 星芒十字 ==================== -->
+        <div class="logo-card">
+            <h2>方案一：星芒十字</h2>
+            <p class="desc">六角星芒 + 医疗十字 + 科技蓝，最经典直接，辨识度最高</p>
+
+            <!-- 大预览 -->
+            <div class="logo-preview">
+                <div class="logo-1">
+                    <svg class="icon" width="64" height="64" viewBox="0 0 120 120" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <!-- 外圈 -->
+                        <circle cx="60" cy="60" r="55" stroke="url(#g1a)" stroke-width="3" fill="none" opacity="0.3"/>
+                        <!-- 六角星 -->
+                        <path d="M60 8 L66 30 L88 20 L80 42 L108 48 L88 58 L108 72 L80 78 L88 100 L66 90 L60 112 L54 90 L32 100 L40 78 L12 72 L32 58 L12 48 L40 42 L32 20 L54 30 Z" fill="url(#g1a)" opacity="0.15"/>
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g1a)"/>
+                        <!-- 十字 -->
+                        <rect x="50" y="36" width="20" height="48" rx="4" fill="white"/>
+                        <rect x="36" y="50" width="48" height="20" rx="4" fill="white"/>
+                        <!-- 渐变定义 -->
+                        <defs>
+                            <linearGradient id="g1a" x1="0" y1="0" x2="120" y2="120">
+                                <stop offset="0%" stop-color="#00d4ff"/>
+                                <stop offset="100%" stop-color="#0066ff"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div>
+                        <span style="font-size:1.4rem;font-weight:800;background:linear-gradient(135deg,#00d4ff,#0066ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">星衍医学</span>
+                        <span style="display:block;font-size:0.65rem;color:#6b8a9a;letter-spacing:0.15em;margin-top:2px;">XINGYAN MEDICAL AI</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 多尺寸 -->
+            <div class="size-options">
+                <div>
+                    <svg width="32" height="32" viewBox="0 0 120 120" fill="none">
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g1b)"/>
+                        <rect x="50" y="36" width="20" height="48" rx="4" fill="white"/>
+                        <rect x="36" y="50" width="48" height="20" rx="4" fill="white"/>
+                        <defs><linearGradient id="g1b" x1="0" y1="0" x2="120" y2="120"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#0066ff"/></linearGradient></defs>
+                    </svg>
+                    <div class="size-label">32px</div>
+                </div>
+                <div>
+                    <svg width="48" height="48" viewBox="0 0 120 120" fill="none">
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g1c)"/>
+                        <rect x="50" y="36" width="20" height="48" rx="4" fill="white"/>
+                        <rect x="36" y="50" width="48" height="20" rx="4" fill="white"/>
+                        <defs><linearGradient id="g1c" x1="0" y1="0" x2="120" y2="120"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#0066ff"/></linearGradient></defs>
+                    </svg>
+                    <div class="size-label">48px</div>
+                </div>
+                <div>
+                    <svg width="64" height="64" viewBox="0 0 120 120" fill="none">
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g1d)"/>
+                        <rect x="50" y="36" width="20" height="48" rx="4" fill="white"/>
+                        <rect x="36" y="50" width="48" height="20" rx="4" fill="white"/>
+                        <defs><linearGradient id="g1d" x1="0" y1="0" x2="120" y2="120"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#0066ff"/></linearGradient></defs>
+                    </svg>
+                    <div class="size-label">64px</div>
+                </div>
+            </div>
+            <div>
+                <span class="tag">推荐</span>
+                <span class="tag">辨识度高</span>
+                <span class="tag">适合 Favicon</span>
+            </div>
+        </div>
+
+        <!-- ==================== Logo 2: 衍变之星 ==================== -->
+        <div class="logo-card">
+            <h2>方案二：衍变之星</h2>
+            <p class="desc">星芒向外衍变扩散，象征 AI 神经网络 / 数据扩散，科技感更强</p>
+
+            <div class="logo-preview gradient-bg">
+                <div class="logo-2">
+                    <svg class="icon" width="64" height="64" viewBox="0 0 140 140" fill="none">
+                        <!-- 衍变波纹 -->
+                        <circle cx="70" cy="70" r="60" stroke="url(#g2a)" stroke-width="1.5" fill="none" opacity="0.15"/>
+                        <circle cx="70" cy="70" r="48" stroke="url(#g2a)" stroke-width="1.5" fill="none" opacity="0.25"/>
+                        <circle cx="70" cy="70" r="36" stroke="url(#g2a)" stroke-width="1.5" fill="none" opacity="0.4"/>
+                        <!-- 核心星形 -->
+                        <path d="M70 20 L76 48 L105 40 L86 60 L118 70 L86 80 L105 100 L76 92 L70 120 L64 92 L35 100 L54 80 L22 70 L54 60 L35 40 L64 48 Z" fill="url(#g2a)"/>
+                        <!-- 中心点 -->
+                        <circle cx="70" cy="70" r="8" fill="white" opacity="0.9"/>
+                        <circle cx="70" cy="70" r="4" fill="url(#g2a)"/>
+                        <defs>
+                            <linearGradient id="g2a" x1="0" y1="0" x2="140" y2="140">
+                                <stop offset="0%" stop-color="#00d4ff"/>
+                                <stop offset="50%" stop-color="#0066ff"/>
+                                <stop offset="100%" stop-color="#00ffcc"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div>
+                        <span style="font-size:1.4rem;font-weight:800;background:linear-gradient(135deg,#00d4ff,#00ffcc);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">星衍医学</span>
+                        <span style="display:block;font-size:0.65rem;color:#6b8a9a;letter-spacing:0.15em;margin-top:2px;">XINGYAN MEDICAL AI</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="size-options">
+                <div>
+                    <svg width="32" height="32" viewBox="0 0 140 140" fill="none">
+                        <circle cx="70" cy="70" r="48" stroke="url(#g2b)" stroke-width="4" fill="none" opacity="0.25"/>
+                        <path d="M70 20 L76 48 L105 40 L86 60 L118 70 L86 80 L105 100 L76 92 L70 120 L64 92 L35 100 L54 80 L22 70 L54 60 L35 40 L64 48 Z" fill="url(#g2b)"/>
+                        <circle cx="70" cy="70" r="8" fill="white" opacity="0.9"/>
+                        <defs><linearGradient id="g2b" x1="0" y1="0" x2="140" y2="140"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#00ffcc"/></linearGradient></defs>
+                    </svg>
+                    <div class="size-label">32px</div>
+                </div>
+                <div>
+                    <svg width="48" height="48" viewBox="0 0 140 140" fill="none">
+                        <circle cx="70" cy="70" r="48" stroke="url(#g2c)" stroke-width="4" fill="none" opacity="0.25"/>
+                        <path d="M70 20 L76 48 L105 40 L86 60 L118 70 L86 80 L105 100 L76 92 L70 120 L64 92 L35 100 L54 80 L22 70 L54 60 L35 40 L64 48 Z" fill="url(#g2c)"/>
+                        <circle cx="70" cy="70" r="8" fill="white" opacity="0.9"/>
+                        <defs><linearGradient id="g2c" x1="0" y1="0" x2="140" y2="140"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#00ffcc"/></linearGradient></defs>
+                    </svg>
+                    <div class="size-label">48px</div>
+                </div>
+                <div>
+                    <svg width="64" height="64" viewBox="0 0 140 140" fill="none">
+                        <circle cx="70" cy="70" r="48" stroke="url(#g2d)" stroke-width="4" fill="none" opacity="0.25"/>
+                        <path d="M70 20 L76 48 L105 40 L86 60 L118 70 L86 80 L105 100 L76 92 L70 120 L64 92 L35 100 L54 80 L22 70 L54 60 L35 40 L64 48 Z" fill="url(#g2d)"/>
+                        <circle cx="70" cy="70" r="8" fill="white" opacity="0.9"/>
+                        <defs><linearGradient id="g2d" x1="0" y1="0" x2="140" y2="140"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#00ffcc"/></linearGradient></defs>
+                    </svg>
+                    <div class="size-label">64px</div>
+                </div>
+            </div>
+            <div>
+                <span class="tag">推荐</span>
+                <span class="tag">科技感强</span>
+                <span class="tag">寓意好</span>
+            </div>
+        </div>
+
+        <!-- ==================== Logo 3: 星核 ==================== -->
+        <div class="logo-card">
+            <h2>方案三：星核脉冲</h2>
+            <p class="desc">核心脉冲星 + 放射波纹，暗合"放射科"的放射概念，更专业</p>
+
+            <div class="logo-preview dark">
+                <div class="logo-3">
+                    <svg class="icon" width="64" height="64" viewBox="0 0 140 140" fill="none">
+                        <!-- 放射波纹 -->
+                        <line x1="70" y1="10" x2="70" y2="35" stroke="#00d4ff" stroke-width="2" opacity="0.3"/>
+                        <line x1="70" y1="105" x2="70" y2="130" stroke="#00d4ff" stroke-width="2" opacity="0.3"/>
+                        <line x1="10" y1="70" x2="35" y2="70" stroke="#00d4ff" stroke-width="2" opacity="0.3"/>
+                        <line x1="105" y1="70" x2="130" y2="70" stroke="#00d4ff" stroke-width="2" opacity="0.3"/>
+                        <line x1="28" y1="28" x2="46" y2="46" stroke="#00d4ff" stroke-width="1.5" opacity="0.2"/>
+                        <line x1="94" y1="94" x2="112" y2="112" stroke="#00d4ff" stroke-width="1.5" opacity="0.2"/>
+                        <line x1="112" y1="28" x2="94" y2="46" stroke="#00d4ff" stroke-width="1.5" opacity="0.2"/>
+                        <line x1="46" y1="94" x2="28" y2="112" stroke="#00d4ff" stroke-width="1.5" opacity="0.2"/>
+                        <!-- 中心星 -->
+                        <circle cx="70" cy="70" r="22" fill="url(#g3a)" opacity="0.2"/>
+                        <path d="M70 48 L75 62 L90 62 L78 70 L83 84 L70 76 L57 84 L62 70 L50 62 L65 62 Z" fill="url(#g3a)"/>
+                        <circle cx="70" cy="70" r="5" fill="white" opacity="0.9"/>
+                        <defs>
+                            <linearGradient id="g3a" x1="48" y1="48" x2="90" y2="90">
+                                <stop offset="0%" stop-color="#00d4ff"/>
+                                <stop offset="100%" stop-color="#0066ff"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div>
+                        <span style="font-size:1.4rem;font-weight:800;background:linear-gradient(135deg,#00d4ff,#0066ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">星衍医学</span>
+                        <span style="display:block;font-size:0.65rem;color:#6b8a9a;letter-spacing:0.15em;margin-top:2px;">XINGYAN MEDICAL AI</span>
+                    </div>
+                </div>
+            </div>
+
+            <div>
+                <span class="tag">贴合放射科</span>
+                <span class="tag">专业感</span>
+            </div>
+        </div>
+
+        <!-- ==================== Logo 4: 徽章式 ==================== -->
+        <div class="logo-card">
+            <h2>方案四：徽章印章</h2>
+            <p class="desc">盾牌形徽章 + 星芒 + 十字，权威感强，适合正式场合、合同、资质文件</p>
+
+            <div class="logo-preview">
+                <div class="logo-4">
+                    <svg width="80" height="80" viewBox="0 0 120 140" fill="none">
+                        <!-- 盾牌 -->
+                        <path d="M60 8 L105 20 L105 60 C105 95 60 132 60 132 C60 132 15 95 15 60 L15 20 Z" fill="url(#g4a)" opacity="0.1" stroke="url(#g4a)" stroke-width="2.5"/>
+                        <!-- 星芒 -->
+                        <path d="M60 32 L64 46 L78 42 L68 52 L80 60 L68 68 L78 78 L64 74 L60 88 L56 74 L42 78 L52 68 L40 60 L52 52 L42 42 L56 46 Z" fill="url(#g4a)"/>
+                        <!-- 十字 -->
+                        <rect x="54" y="56" width="12" height="28" rx="3" fill="white"/>
+                        <rect x="44" y="66" width="32" height="12" rx="3" fill="white"/>
+                        <defs>
+                            <linearGradient id="g4a" x1="15" y1="8" x2="105" y2="132">
+                                <stop offset="0%" stop-color="#00d4ff"/>
+                                <stop offset="100%" stop-color="#0066ff"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <div style="font-size:1.1rem;font-weight:700;background:linear-gradient(135deg,#00d4ff,#0066ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-top:6px;">星衍医学</div>
+                </div>
+            </div>
+
+            <div>
+                <span class="tag">权威感</span>
+                <span class="tag">适合正式文件</span>
+            </div>
+        </div>
+
+        <!-- ==================== Logo 5: 极简文字 ==================== -->
+        <div class="logo-card">
+            <h2>方案五：极简文字</h2>
+            <p class="desc">单星图标 + 渐变文字，干净利落，适合 App 图标、移动端</p>
+
+            <div class="logo-preview gradient-bg">
+                <div class="logo-5">
+                    <svg width="40" height="40" viewBox="0 0 120 120" fill="none">
+                        <circle cx="60" cy="60" r="55" stroke="url(#g5a)" stroke-width="4" fill="none" opacity="0.2"/>
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g5a)"/>
+                        <circle cx="60" cy="60" r="10" fill="white" opacity="0.9"/>
+                        <defs><linearGradient id="g5a" x1="0" y1="0" x2="120" y2="120"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#00ffcc"/></linearGradient></defs>
+                    </svg>
+                    <span style="font-size:1.5rem;font-weight:800;background:linear-gradient(135deg,#00d4ff,#00ffcc);-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:0.05em;">星衍</span>
+                </div>
+            </div>
+
+            <div class="size-options">
+                <div class="favicon-item">
+                    <svg width="16" height="16" viewBox="0 0 120 120" fill="none">
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g5b)"/>
+                        <defs><linearGradient id="g5b" x1="0" y1="0" x2="120" y2="120"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#00ffcc"/></linearGradient></defs>
+                    </svg>
+                    <span>16px</span>
+                </div>
+                <div class="favicon-item">
+                    <svg width="32" height="32" viewBox="0 0 120 120" fill="none">
+                        <path d="M60 18 L64 34 L80 28 L74 44 L96 48 L80 54 L96 72 L74 76 L80 92 L64 86 L60 102 L56 86 L40 92 L46 76 L24 72 L40 54 L24 48 L46 44 L40 28 L56 34 Z" fill="url(#g5c)"/>
+                        <defs><linearGradient id="g5c" x1="0" y1="0" x2="120" y2="120"><stop offset="0%" stop-color="#00d4ff"/><stop offset="100%" stop-color="#00ffcc"/></linearGradient></defs>
+                    </svg>
+                    <span>32px</span>
+                </div>
+            </div>
+
+            <div>
+                <span class="tag">App 图标</span>
+                <span class="tag">极简</span>
+            </div>
+        </div>
+
+    </div>
+
+    <div style="max-width:1200px;margin:3rem auto 0;text-align:center;color:#6b7280;font-size:0.85rem;line-height:1.8;">
+        <p>💡 所有 Logo 均为纯 SVG 矢量图，可无损缩放至任意尺寸</p>
+        <p>选中你喜欢的方案，告诉我编号，我帮你把完整的 SVG 文件导出到你的项目目录</p>
+        <p style="margin-top:1rem;color:#00d4ff;">推荐：方案一（通用性强）或方案二（科技感最强）</p>
+    </div>
+</body>
+</html>

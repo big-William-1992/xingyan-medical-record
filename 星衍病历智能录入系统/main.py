@@ -1,0 +1,2406 @@
+"""
+星衍AI智能病历录入系统 - 主程序
+离线使用，基于 Vosk 语音识别 + 医疗词库纠错
+"""
+import sys
+import os
+import json
+import time
+import re
+
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QTextEdit, QComboBox, QLabel, QSplitter,
+    QListWidget, QListWidgetItem, QStatusBar, QToolBar,
+    QMessageBox, QCheckBox, QGroupBox, QFileDialog,
+    QDialog, QLineEdit, QTableWidget, QTableWidgetItem,
+    QTabWidget, QHeaderView, QTextBrowser, QToolButton,
+    QAction, QMenu, QScrollArea, QFrame
+)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
+from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QTextCharFormat
+
+from corrector import Corrector
+from asr_engine import ASREngine
+from template_engine import TemplateEngine
+from rule_engine import RuleEngine
+from section_parser import SectionParser, SmartDictation
+from medical_classifier import MedicalClassifier
+from crash_logger import CrashLogger
+
+
+# ==================== 语音识别线程 ====================
+class ListenThread(QThread):
+    text_ready = pyqtSignal(str)
+    partial_text = pyqtSignal(str)
+    status_changed = pyqtSignal(str)
+
+    def __init__(self, asr_engine):
+        super().__init__()
+        self.asr = asr_engine
+        self.final_text = ""
+        self._polling = True
+        self._recording = False
+
+    def run(self):
+        self.status_changed.emit("正在录音...")
+        self._recording = True
+        self.asr.start_listening()
+
+        # 等录音结束
+        while self._recording and self.asr.is_listening:
+            self.msleep(100)
+
+        self.status_changed.emit("正在识别...")
+        # 停止录音并获取文本
+        text = self.asr.stop_listening()
+        self.final_text = text
+        self.text_ready.emit(text)
+        self.status_changed.emit("识别完成")
+
+    def stop(self):
+        self._recording = False
+
+
+# ==================== 纠错线程 ====================
+class CorrectThread(QThread):
+    correction_done = pyqtSignal(str, list)  # 修正后文本, 纠错日志
+
+    def __init__(self, corrector, text):
+        super().__init__()
+        self.corrector = corrector
+        self.text = text
+
+    def run(self):
+        corrected, log = self.corrector.correct(self.text)
+        self.correction_done.emit(corrected, log)
+
+
+# ==================== 规则管理对话框 ====================
+class RuleManagerDialog(QDialog):
+    """自定义纠错规则管理界面"""
+
+    def __init__(self, rule_engine, parent=None):
+        super().__init__(parent)
+        self.rule_engine = rule_engine
+        self.setWindowTitle("📏 纠错规则管理")
+        self.setModal(True)
+        self.resize(700, 500)
+        self._init_ui()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # 标签页：错别字 / 逻辑错误
+        tabs = QTabWidget()
+
+        # ---- 错别字标签页 ----
+        typo_tab = QWidget()
+        typo_layout = QVBoxLayout(typo_tab)
+
+        # 添加错别字规则
+        add_typo = QWidget()
+        add_typo_layout = QHBoxLayout(add_typo)
+        add_typo_layout.setContentsMargins(0, 0, 0, 10)
+        self.typo_wrong_input = QLineEdit()
+        self.typo_wrong_input.setPlaceholderText("错误写法（如：心电围）")
+        self.typo_correct_input = QLineEdit()
+        self.typo_correct_input.setPlaceholderText("正确写法（如：心电图）")
+        add_typo_btn = QPushButton("➕ 添加规则")
+        add_typo_btn.clicked.connect(self._add_typo_rule)
+        add_typo_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00d4ff, stop:1 #0066ff);
+                color: #0a0e27;
+                font-weight: bold;
+                padding: 6px 16px;
+                border-radius: 15px;
+                font-size: 12px;
+            }
+            QPushButton:hover { padding: 6px 20px; }
+        """)
+        add_typo_layout.addWidget(QLabel("错误："))
+        add_typo_layout.addWidget(self.typo_wrong_input)
+        add_typo_layout.addWidget(QLabel("正确："))
+        add_typo_layout.addWidget(self.typo_correct_input)
+        add_typo_layout.addWidget(add_typo_btn)
+        typo_layout.addWidget(add_typo)
+
+        # 错别字规则列表
+        self.typo_table = QTableWidget()
+        self.typo_table.setColumnCount(3)
+        self.typo_table.setHorizontalHeaderLabels(["错误", "正确", "操作"])
+        self.typo_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.typo_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.typo_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.typo_table.setColumnWidth(2, 80)
+        self.typo_table.setStyleSheet("""
+            QTableWidget {
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(0,212,255,0.1);
+                border-radius: 8px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QHeaderView::section {
+                background: rgba(0,212,255,0.1);
+                color: #00d4ff;
+                padding: 6px;
+                border: none;
+            }
+        """)
+        typo_layout.addWidget(self.typo_table)
+        self._refresh_typo_table()
+
+        tabs.addTab(typo_tab, "🔤 错别字规则")
+
+        # ---- 逻辑错误标签页 ----
+        logic_tab = QWidget()
+        logic_layout = QVBoxLayout(logic_tab)
+
+        # 添加逻辑错误规则
+        add_logic = QWidget()
+        add_logic_layout = QHBoxLayout(add_logic)
+        add_logic_layout.setContentsMargins(0, 0, 0, 10)
+        self.logic_name_input = QLineEdit()
+        self.logic_name_input.setPlaceholderText("规则名称（如：疾病与症状不符）")
+        self.logic_desc_input = QLineEdit()
+        self.logic_desc_input.setPlaceholderText("规则描述")
+        add_logic_btn = QPushButton("➕ 添加规则")
+        add_logic_btn.clicked.connect(self._add_logic_rule)
+        add_logic_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #ff9944, stop:1 #ff6600);
+                color: white;
+                font-weight: bold;
+                padding: 6px 16px;
+                border-radius: 15px;
+                font-size: 12px;
+            }
+            QPushButton:hover { padding: 6px 20px; }
+        """)
+        add_logic_layout.addWidget(QLabel("名称："))
+        add_logic_layout.addWidget(self.logic_name_input)
+        add_logic_layout.addWidget(QLabel("描述："))
+        add_logic_layout.addWidget(self.logic_desc_input)
+        add_logic_layout.addWidget(add_logic_btn)
+        logic_layout.addWidget(add_logic)
+
+        # 逻辑错误规则列表
+        self.logic_table = QTableWidget()
+        self.logic_table.setColumnCount(3)
+        self.logic_table.setHorizontalHeaderLabels(["错误模式", "描述", "操作"])
+        self.logic_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Fixed)
+        self.logic_table.setColumnWidth(0, 160)
+        self.logic_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.logic_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Fixed)
+        self.logic_table.setColumnWidth(2, 80)
+        self.logic_table.setStyleSheet("""
+            QTableWidget {
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(0,212,255,0.1);
+                border-radius: 8px;
+                color: #e0e0e0;
+                font-size: 13px;
+            }
+            QHeaderView::section {
+                background: rgba(255,153,68,0.1);
+                color: #ff9944;
+                padding: 6px;
+                border: none;
+            }
+        """)
+        logic_layout.addWidget(self.logic_table)
+        self._refresh_logic_table()
+
+        tabs.addTab(logic_tab, "🧠 逻辑错误规则")
+
+        layout.addWidget(tabs)
+
+        # 底部按钮
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.1);
+                color: #b8c5d6;
+                padding: 8px 24px;
+                border-radius: 15px;
+                border: 1px solid rgba(255,255,255,0.1);
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.15); }
+        """)
+        bottom.addWidget(close_btn)
+        layout.addLayout(bottom)
+
+    def _refresh_typo_table(self):
+        """刷新错别字规则列表"""
+        rules = self.rule_engine.get_typo_rules()
+        self.typo_table.setRowCount(len(rules))
+        for i, rule in enumerate(rules):
+            self.typo_table.setItem(i, 0, QTableWidgetItem(rule["错误"]))
+            self.typo_table.setItem(i, 1, QTableWidgetItem(rule["正确"]))
+            # 删除按钮
+            del_btn = QPushButton("🗑")
+            del_btn.setFixedSize(40, 30)
+            del_btn.clicked.connect(lambda _, w=rule["错误"]: self._delete_typo(w))
+            del_btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,80,80,0.1);
+                    border: 1px solid rgba(255,80,80,0.2);
+                    border-radius: 5px;
+                    color: #ff6b6b;
+                    font-size: 14px;
+                }
+                QPushButton:hover { background: rgba(255,80,80,0.2); }
+            """)
+            self.typo_table.setCellWidget(i, 2, del_btn)
+
+    def _refresh_logic_table(self):
+        """刷新逻辑错误规则列表"""
+        rules = self.rule_engine.get_logic_rules()
+        self.logic_table.setRowCount(len(rules))
+        for i, rule in enumerate(rules):
+            self.logic_table.setItem(i, 0, QTableWidgetItem(rule.get("错误模式", "")))
+            self.logic_table.setItem(i, 1, QTableWidgetItem(rule.get("描述", "")))
+            del_btn = QPushButton("🗑")
+            del_btn.setFixedSize(40, 30)
+            del_btn.clicked.connect(lambda _, n=rule["错误模式"]: self._delete_logic(n))
+            del_btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(255,80,80,0.1);
+                    border: 1px solid rgba(255,80,80,0.2);
+                    border-radius: 5px;
+                    color: #ff6b6b;
+                    font-size: 14px;
+                }
+                QPushButton:hover { background: rgba(255,80,80,0.2); }
+            """)
+            self.logic_table.setCellWidget(i, 2, del_btn)
+
+    def _add_typo_rule(self):
+        """添加错别字规则"""
+        wrong = self.typo_wrong_input.text().strip()
+        correct = self.typo_correct_input.text().strip()
+        if not wrong or not correct:
+            QMessageBox.warning(self, "提示", "请填写错误写法和正确写法")
+            return
+        if wrong == correct:
+            QMessageBox.warning(self, "提示", "错误写法和正确写法不能相同")
+            return
+
+        is_new = self.rule_engine.add_typo_rule(wrong, correct)
+        self.typo_wrong_input.clear()
+        self.typo_correct_input.clear()
+        self._refresh_typo_table()
+        msg = "规则已添加" if is_new else "规则已更新"
+        self.parent().status_bar.showMessage(f"📏 {msg}: {wrong} → {correct}")
+
+    def _add_logic_rule(self):
+        """添加逻辑错误规则"""
+        name = self.logic_name_input.text().strip()
+        desc = self.logic_desc_input.text().strip()
+        if not name or not desc:
+            QMessageBox.warning(self, "提示", "请填写规则名称和描述")
+            return
+
+        self.rule_engine.add_logic_rule(name, desc)
+        self.logic_name_input.clear()
+        self.logic_desc_input.clear()
+        self._refresh_logic_table()
+        self.parent().status_bar.showMessage(f"📏 逻辑规则已添加: {name}")
+
+    def _delete_typo(self, wrong):
+        """删除错别字规则"""
+        confirm = QMessageBox.question(
+            self, "确认删除",
+            f"确定删除规则「{wrong}」吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if confirm == QMessageBox.Yes:
+            self.rule_engine.delete_typo_rule(wrong)
+            self._refresh_typo_table()
+            self.parent().status_bar.showMessage(f"📏 规则已删除: {wrong}")
+
+    def _delete_logic(self, name):
+        """删除逻辑错误规则"""
+        confirm = QMessageBox.question(
+            self, "确认删除",
+            f"确定删除规则「{name}」吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if confirm == QMessageBox.Yes:
+            self.rule_engine.delete_logic_rule(name)
+            self._refresh_logic_table()
+            self.parent().status_bar.showMessage(f"📏 规则已删除: {name}")
+
+
+# ==================== 字段常用词面板 ====================
+class FieldWordsPanel(QWidget):
+    """字段常用词面板 - 按字段分类展示可点击插入的常用词"""
+    term_clicked = pyqtSignal(str)  # 发出 (字段名, 词语) 信号
+
+    # 内置默认常用词（当 field_words.json 不存在时使用）
+    DEFAULT_WORDS = {
+        "主诉": {
+            "label": "主诉",
+            "terms": [
+                "发热 3 天", "咳嗽 1 周", "胸痛 2 天", "腹痛 1 天",
+                "头痛 3 天", "头晕 1 周", "呼吸困难 2 天", "胸闷 1 周",
+                "乏力 1 月", "消瘦 2 月", "恶心呕吐 1 天", "腹泻 2 天",
+                "便血 1 天", "水肿 1 周", "意识不清 2 小时",
+            ]
+        },
+        "现病史": {
+            "label": "现病史",
+            "terms": [
+                "患者于 X 天前无明显诱因出现",
+                "伴发热，体温最高达 38.5℃",
+                "无恶心、呕吐、腹泻",
+                "自行口服药物后症状无明显缓解",
+                "门诊查血常规：白细胞升高",
+                "胸片提示右下肺感染",
+                "予以抗感染、补液等对症治疗",
+                "症状有所缓解，为进一步诊治入院",
+            ]
+        },
+        "既往史": {
+            "label": "既往史",
+            "terms": [
+                "否认高血压、糖尿病、冠心病病史",
+                "否认肝炎、结核等传染病史",
+                "否认食物及药物过敏史",
+                "否认手术史、外伤史、输血史",
+                "高血压病史 X 年，口服药物控制可",
+                "糖尿病病史 X 年",
+                "吸烟史 X 年，约 X 支/日",
+                "饮酒史 X 年",
+                "父亲患有高血压，母亲患有糖尿病",
+            ]
+        },
+        "体格检查": {
+            "label": "体格检查",
+            "terms": [
+                "T 36.5℃，P 78 次/分，R 20 次/分，BP 128/80 mmHg",
+                "神志清楚，精神可，发育正常，营养中等",
+                "自主体位，步入病房",
+                "全身皮肤黏膜无黄染，未见皮疹、出血点",
+                "颈软，无抵抗",
+                "胸廓对称，双肺叩诊清音，双肺呼吸音清晰",
+                "心前区无隆起，心率 78 次/分，心律齐",
+                "腹平坦，腹软，全腹无压痛、反跳痛",
+                "肝脾肋下未触及，肠鸣音正常",
+                "双下肢无水肿，四肢肌力 V 级",
+            ]
+        },
+        "辅助检查": {
+            "label": "辅助检查",
+            "terms": [
+                "血常规：白细胞 12×10^9/L，中性粒细胞 85%",
+                "尿常规：未见明显异常",
+                "大便常规：黄色软便，隐血阴性",
+                "血生化：谷丙转氨酶 35U/L，肌酐 78μmol/L",
+                "凝血功能：PT 12.5s，APTT 30s",
+                "血糖：空腹 5.6mmol/L",
+                "心电图：窦性心律，心率 75 次/分",
+                "胸片：心肺膈未见明显异常",
+                "胸部 CT：右肺中叶斑片状高密度影，考虑炎症",
+                "头颅 CT：未见出血及占位性病变",
+                "腹部 B 超：肝胆胰脾未见明显异常",
+            ]
+        },
+        "初步诊断": {
+            "label": "初步诊断",
+            "terms": [
+                "1. 社区获得性肺炎",
+                "2. 高血压病 2 级，很高危",
+                "3. 2 型糖尿病",
+                "4. 冠状动脉粥样硬化性心脏病",
+                "5. 慢性阻塞性肺疾病",
+                "6. 急性阑尾炎",
+                "7. 急性胆囊炎",
+                "8. 脑梗死（急性期）",
+                "9. 消化性溃疡伴出血",
+                "10. 急性胰腺炎",
+            ]
+        },
+        "诊疗计划": {
+            "label": "诊疗计划",
+            "terms": [
+                "完善血常规、血生化、凝血功能、心电图等检查",
+                "抗感染治疗：予头孢曲松钠 2g qd ivgtt",
+                "化痰止咳：氨溴索 30mg tid",
+                "补液维持水电解质平衡",
+                "监测生命体征，定期复查血常规",
+                "低盐低脂糖尿病饮食",
+                "请示上级医师",
+            ]
+        },
+        "鉴别诊断": {
+            "label": "鉴别诊断",
+            "terms": [
+                "1. 肺结核：需胸片/CT 及结核菌素试验鉴别",
+                "2. 支气管肺癌：需 CT 及病理鉴别",
+                "3. 支气管扩张：多有反复咳嗽、咳大量脓痰病史",
+                "4. 肺脓肿：CT 可见空洞及液平",
+            ]
+        },
+        "专科情况": {
+            "label": "专科情况",
+            "terms": {
+                "呼吸科": [
+                    "胸廓对称，双肺叩诊清音",
+                    "双肺呼吸音粗，可闻及干湿性啰音",
+                    "语音共振无增强或减弱",
+                ],
+                "心血管内科": [
+                    "心前区无隆起，心浊音界正常",
+                    "心率 78 次/分，心律齐",
+                    "各瓣膜区未闻及病理性杂音",
+                    "双下肢无水肿",
+                ],
+                "神经内科": [
+                    "神志清楚，言语流利",
+                    "双侧瞳孔等大等圆，对光反射灵敏",
+                    "四肢肌力 V 级，肌张力正常",
+                    "双侧巴宾斯基征阴性",
+                    "颈软，无抵抗",
+                ],
+                "消化内科": [
+                    "腹平坦，未见胃肠型",
+                    "腹软，全腹无压痛、反跳痛、肌紧张",
+                    "肝脾肋下未触及",
+                    "Murphy 征阴性",
+                    "肠鸣音正常",
+                ],
+            }
+        },
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._words_data = {}
+        self._current_field = ""
+        self._load_words()
+        self._init_ui()
+
+    def _load_words(self):
+        """加载 field_words.json"""
+        words_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "星衍病历智能录入系统", "field_words.json"
+        )
+        if not os.path.exists(words_path):
+            words_path = os.path.join(os.path.dirname(__file__), "field_words.json")
+        try:
+            with open(words_path, 'r', encoding='utf-8') as f:
+                self._words_data = json.load(f)
+        except Exception:
+            self._words_data = dict(self.DEFAULT_WORDS)
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 2)
+        layout.setSpacing(2)
+
+        # 字段标签栏
+        tabs_bar = QWidget()
+        tabs_layout = QHBoxLayout(tabs_bar)
+        tabs_layout.setContentsMargins(0, 0, 0, 0)
+        tabs_layout.setSpacing(2)
+
+        # 加载顺序（按病历结构顺序）
+        field_order = [
+            "主诉", "入院方式", "病史陈述者", "现病史", "既往史", "个人史", "婚育史", "家族史",
+            "体格检查", "辅助检查", "初步诊断", "鉴别诊断", "诊疗计划",
+            "手术记录", "会诊记录", "抢救记录", "死亡病例讨论", "专科情况"
+        ]
+
+        self._tab_buttons = {}
+        for field in field_order:
+            if field in self._words_data:
+                btn = QPushButton(field)
+                btn.setCheckable(True)
+                btn.setFixedHeight(22)
+                btn.setToolTip(self._words_data[field].get("description", ""))
+                btn.clicked.connect(lambda checked, f=field: self._on_field_selected(f))
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255,255,255,0.05);
+                        color: #b8c5d6;
+                        border: 1px solid rgba(0,212,255,0.1);
+                        border-radius: 10px;
+                        padding: 2px 10px;
+                        font-size: 11px;
+                    }
+                    QPushButton:checked {
+                        background: rgba(0,212,255,0.2);
+                        color: #00d4ff;
+                        border-color: rgba(0,212,255,0.4);
+                    }
+                    QPushButton:hover {
+                        background: rgba(0,212,255,0.1);
+                    }
+                """)
+                tabs_layout.addWidget(btn)
+                self._tab_buttons[field] = btn
+
+        tabs_layout.addStretch()
+        layout.addWidget(tabs_bar)
+
+        # 常用词滚动区
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll.setMaximumHeight(180)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid rgba(0,212,255,0.08);
+                border-radius: 6px;
+                background: rgba(255,255,255,0.02);
+            }
+            QScrollBar:vertical {
+                background: rgba(0,0,0,0.2);
+                width: 6px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(0,212,255,0.3);
+                border-radius: 3px;
+            }
+        """)
+
+        self._terms_container = QWidget()
+        self._terms_layout = QVBoxLayout(self._terms_container)
+        self._terms_layout.setContentsMargins(6, 6, 6, 6)
+        self._terms_layout.setSpacing(6)
+
+        scroll.setWidget(self._terms_container)
+        layout.addWidget(scroll)
+
+        # 默认选中第一个字段
+        if self._tab_buttons:
+            first_field = list(self._tab_buttons.keys())[0]
+            self._tab_buttons[first_field].setChecked(True)
+            self._show_field_terms(first_field)
+
+    def _on_field_selected(self, field):
+        """切换字段"""
+        for f, btn in self._tab_buttons.items():
+            btn.setChecked(f == field)
+        self._current_field = field
+        self._show_field_terms(field)
+
+    def _show_field_terms(self, field):
+        """展示某字段的常用词"""
+        # 清空
+        while self._terms_layout.count():
+            item = self._terms_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        field_data = self._words_data.get(field)
+        if not field_data:
+            return
+
+        terms = field_data.get("terms", {})
+
+        # 如果 terms 是 dict，按子分类展示
+        if isinstance(terms, dict):
+            for category, word_list in terms.items():
+                # 子分类标签
+                cat_label = QLabel(category)
+                cat_label.setStyleSheet(
+                    "color: #00d4ff; font-size: 11px; font-weight: bold; padding: 2px 0;"
+                )
+                self._terms_layout.addWidget(cat_label)
+                # 词语按钮行
+                row = self._create_term_row(word_list, field)
+                self._terms_layout.addWidget(row)
+        else:
+            # 简单列表
+            row = self._create_term_row(terms, field)
+            self._terms_layout.addWidget(row)
+
+        self._terms_layout.addStretch()
+
+    def _create_term_row(self, terms, field):
+        """创建一行词语按钮"""
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        for term in terms:
+            if not term:
+                continue
+            btn = QPushButton(term)
+            btn.setFixedHeight(24)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda checked, t=term: self.term_clicked.emit(t))
+            btn.setStyleSheet("""
+                QPushButton {
+                    background: rgba(0,212,255,0.08);
+                    color: #c8d6e5;
+                    border: 1px solid rgba(0,212,255,0.15);
+                    border-radius: 12px;
+                    padding: 3px 12px;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background: rgba(0,212,255,0.2);
+                    color: #00d4ff;
+                    border-color: rgba(0,212,255,0.4);
+                }
+            """)
+            row_layout.addWidget(btn)
+
+        row_layout.addStretch()
+        return row
+
+    def set_current_field(self, field):
+        """外部设置当前字段"""
+        if field in self._tab_buttons:
+            self._on_field_selected(field)
+
+
+# ==================== 主窗口 ====================
+class MedVoiceApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("星衍AI智能病历录入系统 v1.0")
+        self.setGeometry(100, 100, 1200, 800)
+
+        # 核心引擎
+        self.rule_engine = RuleEngine()
+        self.corrector = Corrector(rule_engine=self.rule_engine)
+        self.template_engine = TemplateEngine()
+        self.parser = SectionParser()
+        self.smart_dictation = SmartDictation(self.parser)
+        self.classifier = MedicalClassifier()
+
+        # 崩溃日志
+        self.crash_logger = CrashLogger()
+        self.crash_logger.log_event("应用启动")
+
+        # 加载语音模型
+        model_path = os.path.join(os.path.dirname(__file__), "model")
+        self.asr = ASREngine(model_path=model_path)
+        self.listen_thread = None
+
+        # 状态
+        self.current_dept = "通用"
+        self.asr.set_hotwords("通用")
+        self.is_listening = False
+        self.partial_text = ""
+        self._auto_stop_timer = None
+
+        self._init_ui()
+        self._apply_dark_theme()
+
+        # 默认加载通用词库
+        self.corrector.set_department("通用")
+        self._load_departments()
+
+        # 光标移动时自动检测当前字段
+        self.text_edit.cursorPositionChanged.connect(self._on_cursor_moved)
+
+    def _on_cursor_moved(self):
+        """光标移动时，检测当前所在的病历字段"""
+        cursor = self.text_edit.textCursor()
+        text = self.text_edit.toPlainText()
+        pos = cursor.position()
+
+        # 向上查找当前字段名（冒号前的内容）
+        field = self._detect_field_at_position(text, pos)
+        if field and field != self.field_panel._current_field:
+            self.field_panel.set_current_field(field)
+
+    def _detect_field_at_position(self, text, pos):
+        """检测给定位置属于哪个字段"""
+        # 找到光标前的所有字段标记
+        fields = self.parser.SECTION_KEYWORDS
+        best_field = None
+        best_pos = -1
+
+        for keyword, standard_field in self.parser.keyword_to_field.items():
+            # 修复：用 [：: \t]* 替代 [：:\s]*，避免 \s 匹配换行符导致跨行误匹配
+            pattern = re.compile(re.escape(keyword) + r'[：: \t]*')
+            for m in pattern.finditer(text[:pos]):
+                if m.end() > best_pos:
+                    best_pos = m.end()
+                    best_field = standard_field
+
+        return best_field
+
+    def _insert_term_at_cursor(self, term):
+        """将选中的常用词插入到编辑器光标位置"""
+        cursor = self.text_edit.textCursor()
+
+        # 如果当前在空行或字段开头，直接插入
+        # 否则在当前光标位置插入，并加上合适的标点
+        cursor.insertText(term)
+        self.text_edit.setTextCursor(cursor)
+        self.text_edit.setFocus()
+
+    def _init_ui(self):
+        """初始化界面"""
+        # 工具栏
+        toolbar = QToolBar()
+        self.addToolBar(toolbar)
+
+        # 科室选择
+        toolbar.addWidget(QLabel("  科室："))
+        self.dept_combo = QComboBox()
+        self.dept_combo.setMinimumWidth(120)
+        self.dept_combo.currentTextChanged.connect(self._on_dept_changed)
+        toolbar.addWidget(self.dept_combo)
+
+        toolbar.addSeparator()
+
+        # 模板选择
+        toolbar.addWidget(QLabel("  模板："))
+        self.template_combo = QComboBox()
+        self.template_combo.setMinimumWidth(160)
+        self.template_combo.currentTextChanged.connect(self._on_template_changed)
+        toolbar.addWidget(self.template_combo)
+
+        toolbar.addSeparator()
+
+        # 录音按钮
+        self.record_btn = QPushButton("🎤 开始录音")
+        self.record_btn.setCheckable(True)
+        self.record_btn.clicked.connect(self._toggle_recording)
+        self.record_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00d4ff, stop:1 #0066ff);
+                color: #0a0e27;
+                font-weight: bold;
+                padding: 8px 20px;
+                border-radius: 20px;
+                font-size: 14px;
+            }
+            QPushButton:checked {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #ff4444, stop:1 #cc0000);
+                color: white;
+            }
+            QPushButton:hover {
+                padding: 8px 25px;
+            }
+        """)
+        toolbar.addWidget(self.record_btn)
+
+        # 录音模式选择
+        mode_label = QLabel("  模式：")
+        toolbar.addWidget(mode_label)
+        self.record_mode_combo = QComboBox()
+        self.record_mode_combo.addItems(["手动停止", "连续录音（60s）", "连续录音（120s）"])
+        self.record_mode_combo.setToolTip("手动停止：点击按钮开始/结束\n连续录音：到达时长自动停止")
+        self.record_mode_combo.setMinimumWidth(140)
+        toolbar.addWidget(self.record_mode_combo)
+
+        toolbar.addSeparator()
+
+        # 纠错按钮
+        correct_btn = QPushButton("✨ 纠错")
+        correct_btn.clicked.connect(self._run_correction)
+        toolbar.addWidget(correct_btn)
+
+        # 清除按钮
+        clear_btn = QPushButton("🗑 清除")
+        clear_btn.clicked.connect(self._clear_text)
+        toolbar.addWidget(clear_btn)
+
+        # 导出按钮
+        save_btn = QPushButton("💾 导出")
+        save_btn.clicked.connect(self._save_text)
+        toolbar.addWidget(save_btn)
+
+        # 模板管理按钮
+        tpl_btn = QPushButton("📝 模板管理")
+        tpl_btn.clicked.connect(self._open_template_manager)
+        toolbar.addWidget(tpl_btn)
+
+        # 首页→病程 自动填充按钮
+        autofill_btn = QPushButton("📋 首页→病程")
+        autofill_btn.setToolTip("将当前入院记录/首页病程的内容自动填入首次病程记录")
+        autofill_btn.clicked.connect(self._autofill_progress_note)
+        toolbar.addWidget(autofill_btn)
+
+        # 一键套用按钮
+        apply_btn = QPushButton("⚡ 一键套用")
+        apply_btn.setToolTip("语音输入核心信息，自动替换模板中的占位符 X")
+        apply_btn.clicked.connect(self._smart_apply_template)
+        toolbar.addWidget(apply_btn)
+
+        # 规则管理按钮
+        rule_btn = QPushButton("📏 规则管理")
+        rule_btn.clicked.connect(self._open_rule_manager)
+        toolbar.addWidget(rule_btn)
+
+        # 结构化解析按钮
+        struct_btn = QPushButton("📋 结构化")
+        struct_btn.clicked.connect(self._open_struct_view)
+        toolbar.addWidget(struct_btn)
+
+        # 崩溃日志按钮
+        crash_btn = QPushButton("📋 崩溃日志")
+        crash_btn.clicked.connect(self._view_crash_log)
+        toolbar.addWidget(crash_btn)
+
+        # 中央部件
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
+
+        # 分割器
+        splitter = QSplitter(Qt.Horizontal)
+
+        # 左侧面板 - 纠错日志
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        left_layout.addWidget(QLabel("📋 纠错日志"))
+
+        # 筛选按钮组
+        filter_bar = QWidget()
+        filter_layout = QHBoxLayout(filter_bar)
+        filter_layout.setContentsMargins(0, 0, 0, 5)
+        filter_layout.setSpacing(5)
+
+        self.filter_typo = QCheckBox("🔤 错别字")
+        self.filter_logic = QCheckBox("🧠 逻辑错误")
+        self.filter_missing = QCheckBox("⚠️ 缺项提醒")
+        self.filter_typo.setChecked(True)
+        self.filter_logic.setChecked(True)
+        self.filter_missing.setChecked(True)
+
+        # 筛选按钮样式
+        for cb in [self.filter_typo, self.filter_logic, self.filter_missing]:
+            cb.setStyleSheet("""
+                QCheckBox {
+                    color: #b8c5d6;
+                    font-size: 11px;
+                    spacing: 3px;
+                }
+                QCheckBox::indicator {
+                    width: 14px;
+                    height: 14px;
+                    border: 1px solid rgba(0,212,255,0.3);
+                    border-radius: 3px;
+                    background: rgba(0,212,255,0.05);
+                }
+                QCheckBox::indicator:checked {
+                    background: rgba(0,212,255,0.3);
+                    border-color: #00d4ff;
+                }
+            """)
+            cb.stateChanged.connect(self._apply_filter)
+            filter_layout.addWidget(cb)
+
+        filter_layout.addStretch()
+
+        # 统计标签
+        self.stats_label = QLabel("")
+        self.stats_label.setStyleSheet("color: #6b8a9a; font-size: 10px;")
+        filter_layout.addWidget(self.stats_label)
+
+        left_layout.addWidget(filter_bar)
+
+        # 纠错日志列表
+        self.log_list = QListWidget()
+        self.log_list.setStyleSheet("""
+            QListWidget {
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(0,212,255,0.1);
+                border-radius: 8px;
+                padding: 5px;
+                font-size: 12px;
+            }
+            QListWidget::item {
+                padding: 6px;
+                border-bottom: 1px solid rgba(0,212,255,0.05);
+            }
+        """)
+        self.log_list.itemClicked.connect(self._on_log_item_clicked)
+        left_layout.addWidget(self.log_list)
+
+        # 接受/拒绝纠错按钮栏
+        action_bar = QWidget()
+        action_layout = QHBoxLayout(action_bar)
+        action_layout.setContentsMargins(0, 5, 0, 0)
+        action_layout.setSpacing(6)
+
+        accept_btn = QPushButton("✓ 接受")
+        accept_btn.clicked.connect(self._accept_correction)
+        accept_btn.setEnabled(False)
+        accept_btn.setToolTip("接受当前选中的纠错建议")
+        accept_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(81, 207, 102, 0.15);
+                color: #51cf66;
+                padding: 5px 14px;
+                border-radius: 12px;
+                border: 1px solid rgba(81, 207, 102, 0.3);
+                font-size: 11px;
+            }
+            QPushButton:hover { background: rgba(81, 207, 102, 0.25); }
+            QPushButton:disabled { color: #444; border-color: #333; }
+        """)
+
+        reject_btn = QPushButton("✗ 拒绝")
+        reject_btn.clicked.connect(self._reject_correction)
+        reject_btn.setEnabled(False)
+        reject_btn.setToolTip("拒绝当前选中的纠错，系统将记住此偏好")
+        reject_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255, 107, 107, 0.15);
+                color: #ff6b6b;
+                padding: 5px 14px;
+                border-radius: 12px;
+                border: 1px solid rgba(255, 107, 107, 0.3);
+                font-size: 11px;
+            }
+            QPushButton:hover { background: rgba(255, 107, 107, 0.25); }
+            QPushButton:disabled { color: #444; border-color: #333; }
+        """)
+
+        self.log_hint = QLabel("点击日志条目查看详情")
+        self.log_hint.setStyleSheet("color: #6b8a9a; font-size: 10px;")
+
+        action_layout.addWidget(accept_btn)
+        action_layout.addWidget(reject_btn)
+        action_layout.addStretch()
+        action_layout.addWidget(self.log_hint)
+
+        left_layout.addWidget(action_bar)
+        self._accept_btn = accept_btn
+        self._reject_btn = reject_btn
+
+        # 存储完整纠错数据
+        self._all_logs = []
+
+        splitter.addWidget(left_panel)
+
+        # 右侧 - 文本编辑区
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 实时识别显示
+        self.partial_label = QLabel("等待输入...")
+        self.partial_label.setStyleSheet("""
+            color: #00d4ff;
+            font-size: 13px;
+            padding: 5px;
+            background: rgba(0,212,255,0.05);
+            border-radius: 5px;
+        """)
+        self.partial_label.setWordWrap(True)
+        self.partial_label.setMaximumHeight(40)
+        right_layout.addWidget(self.partial_label)
+
+        # 字段常用词面板
+        self.field_panel = FieldWordsPanel()
+        self.field_panel.setMaximumHeight(220)
+        self.field_panel.term_clicked.connect(self._insert_term_at_cursor)
+        right_layout.addWidget(self.field_panel)
+
+        # 文本编辑区
+        self.text_edit = QTextEdit()
+        self.text_edit.setPlaceholderText(
+            "选择模板开始，或直接输入病历内容。\n"
+            "点击「开始录音」用语音输入，系统会自动纠错。"
+        )
+        self.text_edit.setStyleSheet("""
+            QTextEdit {
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(0,212,255,0.15);
+                border-radius: 10px;
+                padding: 15px;
+                font-size: 14px;
+                line-height: 1.8;
+                color: #e0e0e0;
+            }
+            QTextEdit:focus {
+                border: 1px solid rgba(0,212,255,0.4);
+            }
+        """)
+        right_layout.addWidget(self.text_edit)
+
+        splitter.addWidget(right_panel)
+        splitter.setSizes([300, 900])
+
+        main_layout.addWidget(splitter)
+
+        # 状态栏
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        self.status_bar.showMessage("就绪 | 请先选择科室和模板")
+
+    def _apply_dark_theme(self):
+        """深色主题"""
+        app = QApplication.instance()
+        app.setStyle("Fusion")
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(10, 14, 39))
+        palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Base, QColor(15, 20, 50))
+        palette.setColor(QPalette.AlternateBase, QColor(20, 25, 60))
+        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+        palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Text, QColor(220, 220, 220))
+        palette.setColor(QPalette.Button, QColor(30, 40, 80))
+        palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
+        palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        palette.setColor(QPalette.Link, QColor(0, 212, 255))
+        palette.setColor(QPalette.Highlight, QColor(0, 212, 255))
+        palette.setColor(QPalette.HighlightedText, QColor(10, 14, 39))
+        app.setPalette(palette)
+
+    def _load_departments(self):
+        """加载科室列表"""
+        depts = self.template_engine.get_departments()
+        self.dept_combo.clear()
+        self.dept_combo.addItems(depts)
+
+    def _on_dept_changed(self, dept):
+        """科室切换"""
+        self.current_dept = dept
+        self.corrector.set_department(dept)
+        self.asr.set_hotwords(dept)
+
+        # 更新模板列表
+        self.template_combo.clear()
+        templates = self.template_engine.get_templates(dept)
+        for t in templates:
+            self.template_combo.addItem(t["name"])
+
+        self.status_bar.showMessage(f"当前科室：{dept} | 词库已更新")
+
+    def _on_template_changed(self, template_name):
+        """模板选择"""
+        if not template_name:
+            return
+        content = self.template_engine.get_template(
+            self.current_dept, template_name
+        )
+        if content:
+            # 修复：如果编辑器已有内容，提示用户是否覆盖，避免数据丢失
+            current_text = self.text_edit.toPlainText().strip()
+            if current_text:
+                reply = QMessageBox.question(
+                    self, "加载模板",
+                    "当前编辑器已有内容，是否用新模板覆盖？",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                if reply == QMessageBox.No:
+                    return
+            self.text_edit.setPlainText(content)
+            self.status_bar.showMessage(
+                f"已加载模板：{template_name} | 可以开始语音输入"
+            )
+
+    def _autofill_progress_note(self):
+        """将当前入院记录/首页病程的内容自动填入首次病程记录"""
+        current_text = self.text_edit.toPlainText().strip()
+        if not current_text:
+            QMessageBox.warning(self, "提示", "当前编辑器无内容，请先填写入院记录/首页病程。")
+            return
+
+        # 解析当前文本中的字段
+        sections = self.parser.parse(current_text)
+        if not sections:
+            QMessageBox.warning(self, "提示", "未能从当前文本中解析出字段。")
+            return
+
+        # 构建病例特点（从主诉+现病史+体格检查+辅助检查提取）
+        case_features = []
+        # 基本信息
+        basic_info = []
+        for field in ['性别', '年龄', '民族']:
+            if field in sections and sections[field].strip():
+                basic_info.append(f"{field}：{sections[field].strip()}")
+        if basic_info:
+            case_features.append("，".join(basic_info))
+
+        if '主诉' in sections and sections['主诉'].strip():
+            case_features.append(f"主诉：{sections['主诉'].strip()}")
+        if '现病史' in sections and sections['现病史'].strip():
+            case_features.append(f"现病史：{sections['现病史'].strip()}")
+        if '体格检查' in sections and sections['体格检查'].strip():
+            case_features.append(f"体格检查：{sections['体格检查'].strip()}")
+        if '辅助检查' in sections and sections['辅助检查'].strip():
+            case_features.append(f"辅助检查：{sections['辅助检查'].strip()}")
+
+        # 构建首次病程记录
+        from datetime import datetime
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        progress_content = f"""日期/时间：{now_str}
+病例特点：
+{chr(10).join(case_features) if case_features else ''}
+诊断依据：
+{sections.get('诊断依据', '').strip()}
+鉴别诊断：
+{sections.get('鉴别诊断', '').strip()}
+入院诊断：
+{sections.get('初步诊断', sections.get('入院诊断', '')).strip()}
+诊疗计划：
+{sections.get('诊疗计划', '').strip()}
+主治医师意见：
+"""
+
+        # 确认是否生成
+        reply = QMessageBox.question(
+            self, "首页→病程",
+            f"已从当前文本提取到 {len(sections)} 个字段，是否生成首次病程记录？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+        if reply == QMessageBox.Yes:
+            self.text_edit.setPlainText(progress_content)
+            self.status_bar.showMessage("已生成首次病程记录（从首页病程自动填充）")
+
+    def _smart_apply_template(self):
+        """智能套用模板：语音输入核心信息，自动替换模板中的X占位符"""
+        import re
+        current_text = self.text_edit.toPlainText().strip()
+        if not current_text:
+            QMessageBox.warning(self, "提示", "请先选择常见病模板。")
+            return
+
+        # 检查是否有X占位符
+        x_count = len(re.findall(r'X+', current_text))
+        if x_count == 0:
+            QMessageBox.information(self, "提示", "当前模板中没有发现占位符 X，无需替换。")
+            return
+
+        # 创建输入对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("一键套用 - 填写患者核心信息")
+        dialog.setMinimumWidth(500)
+        dialog.setStyleSheet("""
+            QDialog { background: #2b2b2b; color: #e0e0e0; }
+            QLabel { color: #e0e0e0; font-size: 13px; }
+            QLineEdit { 
+                background: #3c3c3c; color: #e0e0e0; border: 1px solid #555;
+                padding: 6px; border-radius: 4px; font-size: 13px;
+            }
+            QLineEdit:focus { border: 1px solid #4a9eff; }
+            QPushButton { 
+                background: #4a9eff; color: white; border: none;
+                padding: 8px 20px; border-radius: 4px; font-size: 13px;
+            }
+            QPushButton:hover { background: #3a8eef; }
+            QPushButton#cancelBtn { background: #555; }
+            QPushButton#cancelBtn:hover { background: #666; }
+        """)
+
+        layout = QVBoxLayout(dialog)
+
+        # 提示信息
+        info_label = QLabel(f"当前模板中有 {x_count} 处占位符需要填写。")
+        info_label.setStyleSheet("color: #4a9eff; font-size: 14px; font-weight: bold;")
+        layout.addWidget(info_label)
+
+        hint_label = QLabel("请填写患者核心信息（留空则保留原占位符）：")
+        layout.addWidget(hint_label)
+
+        # 定义常用字段
+        fields = [
+            ("姓名", ""), ("性别", ""), ("年龄", ""),
+            ("病程时间（如：3天、2周）", ""),
+            ("血压（如：160/100）", ""),
+            ("体温（如：38.5）", ""),
+            ("心率（如：80）", ""),
+            ("白细胞（如：12）", ""),
+            ("左右侧（左/右）", ""),
+            ("部位（如：股骨、胫骨）", ""),
+        ]
+
+        line_edits = {}
+        for label_text, default in fields:
+            row = QHBoxLayout()
+            label = QLabel(label_text + "：")
+            label.setFixedWidth(180)
+            edit = QLineEdit(default)
+            edit.setPlaceholderText("留空则保留原占位符")
+            row.addWidget(label)
+            row.addWidget(edit)
+            layout.addLayout(row)
+            line_edits[label_text] = edit
+
+        # 按钮
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("✅ 替换")
+        cancel_btn = QPushButton("取消")
+        cancel_btn.setObjectName("cancelBtn")
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        # 收集用户输入
+        values = {}
+        for label_text, edit in line_edits.items():
+            val = edit.text().strip()
+            if val:
+                values[label_text] = val
+
+        if not values:
+            QMessageBox.information(self, "提示", "未填写任何信息，模板未修改。")
+            return
+
+        # 执行替换
+        result = current_text
+
+        # 1. 基本信息替换
+        if '姓名' in values:
+            result = re.sub(r'姓名：\s*', f'姓名：{values["姓名"]}  ', result)
+        if '性别' in values:
+            result = re.sub(r'性别：\s*', f'性别：{values["性别"]}  ', result)
+        if '年龄' in values:
+            result = re.sub(r'年龄：\s*', f'年龄：{values["年龄"]}  ', result)
+
+        # 2. 数值类替换
+        time_val = values.get('病程时间', '')
+        bp_val = values.get('血压', '')
+        temp_val = values.get('体温', '')
+        hr_val = values.get('心率', '')
+        wbc_val = values.get('白细胞', '')
+        side_val = values.get('左右侧', '')
+        part_val = values.get('部位', '')
+
+        # 提取时间数字和单位
+        time_match = re.match(r'(\d+)(\S*)', time_val) if time_val else None
+        time_num = time_match.group(1) if time_match else ''
+        time_unit = time_match.group(2) if time_match else ''
+
+        # 替换血压 XXX/XXX
+        if bp_val:
+            parts = bp_val.split('/')
+            if len(parts) == 2:
+                result = re.sub(r'XXX/XXX\s*mmHg', f'{parts[0]}/{parts[1]}mmHg', result)
+                result = re.sub(r'XXX/XXX', f'{parts[0]}/{parts[1]}', result)
+
+        # 替换体温 XX.X
+        if temp_val:
+            result = re.sub(r'XX\.X℃', f'{temp_val}℃', result)
+            result = re.sub(r'XX-XX℃', f'{temp_val}℃', result)
+
+        # 替换心率
+        if hr_val:
+            result = re.sub(r'(?<!\d)XX(?!\.)(?=次/分)', hr_val, result)
+
+        # 替换白细胞
+        if wbc_val:
+            result = re.sub(r'(?<!\d)XX(?!\.)(?=×)', wbc_val, result)
+
+        # 替换左右侧
+        if side_val:
+            result = result.replace('左/右', side_val)
+            result = re.sub(r'左/右侧', f'{side_val}侧', result)
+
+        # 替换部位
+        if part_val:
+            result = result.replace('侧X', f'侧{part_val}')
+
+        # 替换通用 X 占位符
+        if time_num:
+            # X年/月/天/小时 → 数字+单位
+            result = re.sub(r'(?<=\D)X年(?!\()', f'{time_num}年', result)
+            result = re.sub(r'(?<=\D)X月(?!\()', f'{time_num}月', result)
+            result = re.sub(r'(?<=\D)X天', f'{time_num}天', result)
+            result = re.sub(r'(?<=\D)X小时', f'{time_num}小时', result)
+            result = re.sub(r'(?<=\D)X周', f'{time_num}周', result)
+
+        # 替换剩余的单个 X（数字占位）
+        # 保留未填写的 X 占位符
+
+        self.text_edit.setPlainText(result)
+        filled_count = sum(1 for v in values.values() if v)
+        remaining = len(re.findall(r'X+', result))
+        self.status_bar.showMessage(
+            f"已替换 {filled_count} 项信息，剩余 {remaining} 处占位符待手动填写"
+        )
+
+    def _replace_placeholders_with_voice(self, voice_text, template_text):
+        """将语音输入的核心信息自动替换模板中的X占位符"""
+        import re
+        result = template_text
+
+        # 0. 中文数字转阿拉伯数字
+        cn_map = {'零': '0', '一': '1', '二': '2', '三': '3', '四': '4',
+                  '五': '5', '六': '6', '七': '7', '八': '8', '九': '9', '两': '2'}
+        def cn_to_arabic(text):
+            """简单中文数字转阿拉伯数字（支持个位、十位、百位）"""
+            # X百X十X 模式（如三百六十五 = 365）
+            m = re.match(r'^([一二三四五六七八九])百([一二三四五六七八九])十([一二三四五六七八九])$', text)
+            if m:
+                return str(int(cn_map[m.group(1)]) * 100 + int(cn_map[m.group(2)]) * 10 + int(cn_map[m.group(3)]))
+            # X百X十 模式（如一百二十 = 120）
+            m = re.match(r'^([一二三四五六七八九])百([一二三四五六七八九])十$', text)
+            if m:
+                return str(int(cn_map[m.group(1)]) * 100 + int(cn_map[m.group(2)]) * 10)
+            # X百 模式（如一百 = 100）
+            m = re.match(r'^([一二三四五六七八九])百$', text)
+            if m:
+                return str(int(cn_map[m.group(1)]) * 100)
+            # X十X 模式（如六十五 = 65）
+            m = re.match(r'^([一二三四五六七八九])十([一二三四五六七八九])$', text)
+            if m:
+                return str(int(cn_map[m.group(1)]) * 10 + int(cn_map[m.group(2)]))
+            # 十X 模式（如十二 = 12）
+            m = re.match(r'^十([一二三四五六七八九])$', text)
+            if m:
+                return str(10 + int(cn_map[m.group(1)]))
+            # X十 模式（如三十 = 30）
+            m = re.match(r'^([一二三四五六七八九])十$', text)
+            if m:
+                return str(int(cn_map[m.group(1)]) * 10)
+            # 单独的十 = 10
+            if text == '十':
+                return '10'
+            # 纯个位
+            r = ''
+            for ch in text:
+                if ch in cn_map:
+                    r += cn_map[ch]
+                else:
+                    return text
+            return r or text
+
+        # 1. 用 SectionParser 解析语音文本中的字段
+        sections = self.parser.parse(voice_text)
+
+        # 2. 用 extract_basic_fields 提取基本信息
+        inferred = self.classifier.extract_basic_fields(voice_text)
+
+        # 3. 替换基本信息占位符
+        name = inferred.get('姓名', sections.get('姓名', ''))
+        if name:
+            result = re.sub(r'姓名：\s*', f'姓名：{name}  ', result)
+
+        gender = inferred.get('性别', sections.get('性别', ''))
+        if gender:
+            result = re.sub(r'性别：\s*', f'性别：{gender}  ', result)
+
+        age = inferred.get('年龄', sections.get('年龄', ''))
+        if age:
+            result = re.sub(r'年龄：\s*', f'年龄：{age}  ', result)
+
+        # 4. 提取时间信息（支持阿拉伯数字和中文数字，替换所有单位）
+        for unit in ['年', '月', '天', '小时', '周']:
+            # 阿拉伯数字
+            m = re.search(r'(\d+)\s*' + re.escape(unit), voice_text)
+            if m:
+                time_val = m.group(1)
+                result = re.sub(r'(?<=\D)X+' + re.escape(unit), f'{time_val}{unit}', result)
+                continue
+            # 中文数字
+            m = re.search(r'([零一二两三四五六七八九十百]+)\s*' + re.escape(unit), voice_text)
+            if m:
+                time_val = cn_to_arabic(m.group(1))
+                result = re.sub(r'(?<=\D)X+' + re.escape(unit), f'{time_val}{unit}', result)
+
+        # 5. 提取血压（XXX/XXX）
+        bp_match = re.search(r'(\d{2,3})\s*[/\u6bd4]\s*(\d{2,3})', voice_text)
+        if bp_match:
+            systolic, diastolic = bp_match.group(1), bp_match.group(2)
+            result = re.sub(r'XXX\s*/\s*XXX\s*mmHg', f'{systolic}/{diastolic}mmHg', result)
+            result = re.sub(r'XXX\s*/\s*XXX', f'{systolic}/{diastolic}', result)
+
+        # 6. 提取体温
+        temp_match = re.search(r'(\d{2}\.\d)\s*[度℃]', voice_text)
+        if not temp_match:
+            temp_match = re.search(r'体温\s*(\d{2}\.?\d*)', voice_text)
+        if temp_match:
+            temp = temp_match.group(1)
+            result = re.sub(r'XX\.X℃', f'{temp}℃', result)
+            result = re.sub(r'XX-XX℃', f'{temp}℃', result)
+
+        # 7. 提取心率
+        hr_match = re.search(r'(?:心率|脉搏)\s*(\d{2,3})', voice_text)
+        if hr_match:
+            hr = hr_match.group(1)
+            result = re.sub(r'(?<!\d)XX(?!\.)(?=次/分)', hr, result)
+
+        # 8. 提取白细胞
+        wbc_match = re.search(r'(?:白细胞|WBC)\s*(\d+\.?\d*)', voice_text)
+        if wbc_match:
+            wbc = wbc_match.group(1)
+            result = re.sub(r'(?<!\d)XX(?!\.)(?=×)', wbc, result)
+
+        # 9. 提取左右侧
+        if re.search(r'左侧|左边', voice_text):
+            result = result.replace('左/右', '左')
+        elif re.search(r'右侧|右边', voice_text):
+            result = result.replace('左/右', '右')
+
+        # 10. 提取部位
+        part_match = re.search(r'[左右]侧(\S{1,4}?)(?:肿痛|疼痛|骨折|肿胀)', voice_text)
+        if part_match:
+            part = part_match.group(1)
+            result = result.replace('侧X', f'侧{part}')
+
+        return result
+
+    def _toggle_recording(self):
+        """开始/停止录音"""
+        if not self.is_listening:
+            self._start_recording()
+        else:
+            self._stop_recording()
+
+    def _start_recording(self):
+        """开始录音"""
+        if not self.asr.is_ready():
+            QMessageBox.warning(
+                self, "提示",
+                "语音识别引擎未就绪。\n"
+                "请确认已安装 FunASR 和 SenseVoice 模型。\n\n"
+                "运行：pip install funasr modelscope\n"
+                "模型会自动下载到 ~/.cache/modelscope/"
+            )
+            return
+
+        # 根据模式设置录音时长
+        mode = self.record_mode_combo.currentText()
+        if "60" in mode:
+            self.asr.recording_duration = 60
+        elif "120" in mode:
+            self.asr.recording_duration = 120
+        else:
+            self.asr.recording_duration = 30  # 手动停止模式也设一个超时
+
+        self.record_btn.setText("⏹ 停止录音")
+        self.record_btn.setChecked(True)
+        self.is_listening = True
+        self.partial_text = ""
+        self.text_edit.setFocus()
+
+        self.listen_thread = ListenThread(self.asr)
+        self.listen_thread.text_ready.connect(self._on_recognized)
+        self.listen_thread.partial_text.connect(self._on_partial)
+        self.listen_thread.status_changed.connect(self.status_bar.showMessage)
+
+        # 连续模式：到时间自动停止
+        mode = self.record_mode_combo.currentText()
+        if "连续" in mode:
+            self._auto_stop_timer = QTimer()
+            self._auto_stop_timer.setSingleShot(True)
+            self._auto_stop_timer.timeout.connect(self._stop_recording)
+            self._auto_stop_timer.start(self.asr.recording_duration * 1000)
+
+        self.listen_thread.start()
+
+    def _stop_recording(self):
+        """停止录音"""
+        self.is_listening = False
+        self.record_btn.setText("🎤 开始录音")
+        self.record_btn.setChecked(False)
+        self.crash_logger.log_event("录音停止")
+
+        # 停止自动停止计时器
+        if hasattr(self, '_auto_stop_timer') and self._auto_stop_timer:
+            self._auto_stop_timer.stop()
+            self._auto_stop_timer = None
+
+        if self.listen_thread:
+            self.listen_thread.stop()
+            self.listen_thread.wait(2000)
+            self.listen_thread = None
+
+        self.partial_label.setText("等待输入...")
+        self.status_bar.showMessage("录音结束")
+
+    def _on_recognized(self, text):
+        """识别到文本，自动按病历格式结构化填充"""
+        try:
+            print(f"[UI] 收到识别结果，长度: {len(text) if text else 0}")
+            self.crash_logger.log_event("ASR识别完成", {"text_length": len(text) if text else 0})
+
+            if not text:
+                self.partial_label.setText("⚠️ 未识别到文字，请重试")
+                self.status_bar.showMessage("识别完成，但未获取到文字内容")
+                return
+
+            # 如果选了模板，用增量填充（只填空字段，不覆盖已有内容）
+            template_name = self.template_combo.currentText()
+            if template_name and self.current_dept:
+                template_content = self.template_engine.get_template(
+                    self.current_dept, template_name
+                )
+                if template_content:
+                    current_content = self.text_edit.toPlainText().strip()
+                    base = current_content if current_content else template_content
+
+                    # 检查是否是常见病模板（含X占位符）
+                    import re as _re
+                    if _re.search(r'X+', base):
+                        # 常见病模板模式：用语音输入替换X占位符
+                        filled = self._replace_placeholders_with_voice(text, base)
+                        self.text_edit.setPlainText(filled)
+                        remaining = len(_re.findall(r'X+', filled))
+                        self.partial_label.setText(f"✓ 已替换占位符，剩余 {remaining} 处")
+                        self.status_bar.showMessage(f"套用完成，剩余 {remaining} 处占位符待手动填写")
+                        print(f"[UI] 常见病模板占位符替换完成")
+                        return
+
+                    filled = self.classifier.incremental_fill(text, base)
+                    self.text_edit.setPlainText(filled)
+                    self.partial_label.setText("✓ 识别完成")
+                    self.status_bar.showMessage(f"识别完成，共 {len(filled)} 字")
+                    print(f"[UI] 增量填充完成")
+                    return
+
+            # 将识别文本插入到编辑器（追加模式，不覆盖已有内容）
+            current = self.text_edit.toPlainText()
+            if current.strip():
+                # 有内容时，在末尾追加识别结果
+                text = current.rstrip() + "\n\n" + text
+            self.text_edit.setPlainText(text)
+            self.partial_label.setText("✓ 识别完成")
+            self.status_bar.showMessage(f"识别完成，共 {len(text)} 字")
+            print(f"[UI] 文本已插入编辑器")
+
+        except Exception as e:
+            print(f"[UI] 处理识别结果时出错: {e}")
+            import traceback
+            traceback.print_exc()
+            self.crash_logger.log_exception(
+                type(e), e, e.__traceback__,
+                context="处理识别结果"
+            )
+            self.partial_label.setText("⚠️ 处理识别结果时出错")
+            self.status_bar.showMessage(f"错误: {e}")
+
+    def _on_partial(self, text):
+        """中间识别结果"""
+        self.partial_label.setText(f"🔊 识别中：{text}")
+
+    def _run_correction(self):
+        """执行纠错"""
+        text = self.text_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.information(self, "提示", "请先输入或录制文本")
+            return
+
+        self.status_bar.showMessage("正在纠错...")
+        QApplication.processEvents()
+
+        self.correct_thread = CorrectThread(self.corrector, text)
+        self.correct_thread.correction_done.connect(self._on_correction_done)
+        self.correct_thread.start()
+
+    def _on_correction_done(self, corrected, log):
+        """纠错完成"""
+        self.text_edit.setPlainText(corrected)
+
+        # 保存完整日志
+        self._all_logs = log
+
+        # 应用筛选
+        self._apply_filter()
+
+        # 统计
+        counts = {"错别字": 0, "逻辑错误": 0, "缺项提醒": 0}
+        for item in log:
+            cat = item.get("分类", "")
+            if cat in counts:
+                counts[cat] += 1
+        total = sum(counts.values())
+        self.stats_label.setText(f"共{total}条 | 🔤{counts['错别字']} 🧠{counts['逻辑错误']} ⚠️{counts['缺项提醒']}")
+
+        self.status_bar.showMessage(f"纠错完成，共 {total} 条建议")
+
+    def _apply_filter(self):
+        """根据筛选按钮过滤日志"""
+        self.log_list.clear()
+
+        show_typo = self.filter_typo.isChecked()
+        show_logic = self.filter_logic.isChecked()
+        show_missing = self.filter_missing.isChecked()
+
+        filter_map = {
+            "错别字": show_typo,
+            "逻辑错误": show_logic,
+            "缺项提醒": show_missing,
+        }
+
+        self._log_item_map = {}  # list item → log data index
+
+        for idx, item in enumerate(self._all_logs):
+            cat = item.get("分类", "")
+            if cat not in filter_map or not filter_map[cat]:
+                continue
+
+            # 分类图标和颜色
+            if cat == "错别字":
+                icon = "🔤"
+                color = "#00d4ff"
+            elif cat == "逻辑错误":
+                icon = "🧠"
+                color = "#ff9944"
+            elif cat == "缺项提醒":
+                icon = "⚠️"
+                color = "#ffdd44"
+            else:
+                icon = "📝"
+                color = "#b8c5d6"
+
+            level = item.get("级别", "")
+            type_name = item.get("type", "")
+            orig = item.get("原文", "")
+            corr = item.get("修正", "")
+
+            # 类型名称
+            line = f"{icon} <span style='color:{color};'>{type_name}</span>"
+            if level:
+                line += f" <span style='color:#6b8a9a;font-size:10px;'>[{level}]</span>"
+
+            # 原文 → 修正
+            detail = ""
+            if orig and orig != corr:
+                detail = f"<span style='color:#ff6b6b;'>{orig}</span> → <span style='color:#51cf66;'>{corr}</span>"
+            elif orig:
+                detail = f"<span style='color:#e0e0e0;'>{orig}</span>"
+
+            # 相似度
+            if item.get("相似度"):
+                detail += f" <span style='color:#6b8a9a;font-size:10px;'>({item['相似度']})</span>"
+
+            # 合并为一条 item
+            full_text = line
+            if detail:
+                full_text += f"<br>{detail}"
+
+            list_item = QListWidgetItem(full_text)
+            list_item.setData(Qt.UserRole, idx)  # 映射到 _all_logs 索引
+            self.log_list.addItem(list_item)
+
+    def _on_log_item_clicked(self, item):
+        """点击日志条目 → 高亮编辑器对应文本"""
+        idx = item.data(Qt.UserRole)
+        if idx is None or idx >= len(self._all_logs):
+            return
+        log_data = self._all_logs[idx]
+        orig = log_data.get("原文", "")
+        corr = log_data.get("修正", "")
+
+        # 优先高亮修正后的文本，找不到再高亮原文
+        search_text = corr if corr and corr != orig else orig
+        if not search_text:
+            return
+
+        self._highlight_text_in_editor(search_text)
+        self.log_hint.setText(f"已定位：{orig} → {corr}" if orig != corr else f"已定位：{orig}")
+        self._accept_btn.setEnabled(True)
+        self._reject_btn.setEnabled(True)
+
+    def _highlight_text_in_editor(self, text):
+        """在编辑器中高亮所有匹配文本"""
+        doc = self.text_edit.document()
+        cursor = self.text_edit.textCursor()
+        cursor.select(QTextCursor.Document)
+        cursor.clearSelection()
+        self.text_edit.setTextCursor(cursor)
+
+        extra = []
+        found_any = False
+        cursor = doc.find(text, 0)
+        while not cursor.isNull():
+            found_any = True
+            sel = QTextEdit.ExtraSelection()
+            sel.cursor = cursor
+            sel.format = QTextCharFormat()
+            sel.format.setBackground(QColor(255, 200, 50, 100))
+            extra.append(sel)
+            cursor = doc.find(text, cursor)
+        self.text_edit.setExtraSelections(extra)
+
+        if found_any:
+            # 跳到第一个匹配位置
+            first = doc.find(text, 0)
+            if not first.isNull():
+                self.text_edit.setTextCursor(first)
+
+    def _accept_correction(self):
+        """接受当前纠错（默认已应用，此操作为确认，从拒绝列表中移除）"""
+        item = self.log_list.currentItem()
+        if not item:
+            return
+        idx = item.data(Qt.UserRole)
+        if idx is None or idx >= len(self._all_logs):
+            return
+        log_data = self._all_logs[idx]
+        orig = log_data.get("原文", "")
+        corr = log_data.get("修正", "")
+        if orig and corr:
+            self.corrector.rejections.pop((orig, corr), None)
+            self.corrector.save_rejection("", "")  # 刷新文件
+            # 重建 rejection 文件（去掉空键）
+            try:
+                serializable = [
+                    "\x00".join(k) for k in self.corrector.rejections.keys()
+                    if k[0] and k[1]
+                ]
+                with open(self.corrector.rejection_path, 'w', encoding='utf-8') as f:
+                    json.dump(serializable, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        self.status_bar.showMessage(f"✓ 已接受纠错：{orig} → {corr}")
+
+    def _reject_correction(self):
+        """拒绝当前纠错，写入个人偏好"""
+        item = self.log_list.currentItem()
+        if not item:
+            return
+        idx = item.data(Qt.UserRole)
+        if idx is None or idx >= len(self._all_logs):
+            return
+        log_data = self._all_logs[idx]
+        orig = log_data.get("原文", "")
+        corr = log_data.get("修正", "")
+        if not orig or not corr:
+            return
+
+        # 记录拒绝规则
+        self.corrector.save_rejection(orig, corr)
+
+        # 恢复原文（从编辑器中撤销这条纠错）
+        # 修复：只替换第一个匹配，避免 replace 替换所有相同文本导致误伤
+        idx_in_text = text.find(corr)
+        if idx_in_text >= 0:
+            text = text[:idx_in_text] + orig + text[idx_in_text + len(corr):]
+        self.text_edit.setPlainText(text)
+
+        # 从日志中移除
+        self._all_logs[idx]["_rejected"] = True
+        self._apply_filter()
+
+        # 更新统计
+        counts = {"错别字": 0, "逻辑错误": 0, "缺项提醒": 0}
+        for item in self._all_logs:
+            if item.get("_rejected"):
+                continue
+            cat = item.get("分类", "")
+            if cat in counts:
+                counts[cat] += 1
+        total = sum(counts.values())
+        self.stats_label.setText(f"共{total}条 | 🔤{counts['错别字']} 🧠{counts['逻辑错误']} ⚠️{counts['缺项提醒']}")
+
+        self._accept_btn.setEnabled(False)
+        self._reject_btn.setEnabled(False)
+        self.log_hint.setText(f"已拒绝并记住：{orig}")
+        self.status_bar.showMessage(f"✗ 已拒绝纠错并记录偏好：{orig} → {corr}")
+
+    def _clear_text(self):
+        """清除文本"""
+        self.text_edit.clear()
+        self.log_list.clear()
+        self._all_logs = []
+        self.stats_label.setText("")
+        self.partial_label.setText("等待输入...")
+
+    def _save_text(self):
+        """导出文本（.txt / .md / 打印预览）"""
+        text = self.text_edit.toPlainText()
+        if not text:
+            QMessageBox.information(self, "提示", "没有内容可导出")
+            return
+
+        # 弹出格式选择菜单
+        menu = QMenu(self)
+        txt_action = QAction("📄 导出 .txt", self)
+        txt_action.triggered.connect(lambda: self._export_as(text, "txt"))
+        menu.addAction(txt_action)
+
+        md_action = QAction("📝 导出 .md", self)
+        md_action.triggered.connect(lambda: self._export_as(text, "md"))
+        menu.addAction(md_action)
+
+        preview_action = QAction("🖨 打印预览", self)
+        preview_action.triggered.connect(lambda: self._print_preview(text))
+        menu.addAction(preview_action)
+
+        # 在导出按钮位置显示菜单
+        sender_btn = self.sender()
+        if sender_btn:
+            btn_rect = sender_btn.geometry()
+            menu.exec_(self.mapToGlobal(btn_rect.bottomLeft()))
+        else:
+            menu.exec_(self.mapToGlobal(self.record_btn.geometry().bottomLeft()))
+
+    def _export_as(self, text, fmt):
+        """按指定格式导出"""
+        if fmt == "md":
+            # 将病历文本转为 Markdown 格式
+            md_text = self._convert_to_markdown(text)
+            default_name = "病历记录.md"
+            filter_str = "Markdown 文件 (*.md);;所有文件 (*)"
+        else:
+            md_text = text
+            default_name = "病历记录.txt"
+            filter_str = "文本文件 (*.txt);;所有文件 (*)"
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, f"导出 {fmt.upper()}",
+            os.path.join(os.path.expanduser("~"), "Desktop", default_name),
+            filter_str
+        )
+        if path:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(md_text)
+            self.status_bar.showMessage(f"已导出：{path}")
+
+    def _convert_to_markdown(self, text):
+        """将纯文本病历转为 Markdown 格式"""
+        lines = text.split('\n')
+        result = ["# 病历记录\n"]
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # 字段名加粗
+            if '：' in line or ':' in line:
+                parts = re.split(r'[：:]', line, 1)
+                if len(parts) == 2:
+                    field, content = parts[0].strip(), parts[1].strip()
+                    result.append(f"**{field}**：{content}\n")
+                else:
+                    result.append(f"{line}\n")
+            else:
+                result.append(f"{line}\n")
+        return '\n'.join(result)
+
+    def _print_preview(self, text):
+        """打印预览"""
+        from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
+        printer = QPrinter(QPrinter.HighResolution)
+        dialog = QPrintPreviewDialog(printer, self)
+        dialog.paintRequested.connect(lambda p: self._print_text(p, text))
+        dialog.exec_()
+
+    def _print_text(self, printer, text):
+        """实际打印/预览渲染"""
+        from PyQt5.QtPrintSupport import QPrinter
+        doc = QTextDocument()
+        # 简单 HTML 格式
+        html = "<h2>病历记录</h2><hr/>"
+        for line in text.split('\n'):
+            escaped = line.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            if '：' in line or ':' in line:
+                parts = re.split(r'[：:]', line, 1)
+                if len(parts) == 2:
+                    html += f"<p><b>{parts[0].strip()}</b>：{parts[1].strip()}</p>"
+                else:
+                    html += f"<p>{escaped}</p>"
+            else:
+                html += f"<p>{escaped}</p>"
+        doc.setHtml(html)
+        doc.print_(printer)
+
+    def _open_rule_manager(self):
+        """打开规则管理对话框"""
+        dialog = RuleManagerDialog(self.rule_engine, self)
+        dialog.exec_()
+        # 刷新后重新加载规则
+        self.status_bar.showMessage("📏 规则已更新")
+
+    def _open_struct_view(self):
+        """打开结构化解析视图"""
+        text = self.text_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.information(self, "提示", "请先输入或录制文本")
+            return
+
+        dialog = SectionDialog(self.parser, text, self)
+        if dialog.exec_() == QDialog.Accepted:
+            # 将结构化结果填充回编辑器
+            structured = dialog.get_result()
+            self.text_edit.setPlainText(structured)
+            self.status_bar.showMessage("📋 结构化填充完成")
+
+    def _view_crash_log(self):
+        """查看崩溃日志"""
+        logs = self.crash_logger.get_recent_logs(lines=200)
+        if not logs:
+            QMessageBox.information(self, "崩溃日志", "暂无日志记录")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("崩溃日志")
+        dialog.setModal(True)
+        dialog.resize(800, 600)
+
+        layout = QVBoxLayout(dialog)
+
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setText(''.join(logs))
+        text_edit.setStyleSheet("""
+            QTextEdit {
+                background: #1a1a2e;
+                color: #e0e0e0;
+                font-family: monospace;
+                font-size: 11px;
+            }
+        """)
+        layout.addWidget(text_edit)
+
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        clear_btn = QPushButton("清空日志")
+        clear_btn.clicked.connect(self._clear_crash_log)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        bottom.addWidget(clear_btn)
+        bottom.addWidget(close_btn)
+        layout.addLayout(bottom)
+
+        dialog.exec_()
+
+    def _clear_crash_log(self):
+        """清空崩溃日志"""
+        log_path = self.crash_logger.get_log_path()
+        try:
+            with open(log_path, 'w', encoding='utf-8') as f:
+                pass
+            self.status_bar.showMessage("日志已清空")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"清空日志失败: {e}")
+
+    def _open_template_manager(self):
+        """打开模板管理对话框"""
+        dialog = TemplateManagerDialog(
+            self.template_engine, self.current_dept, self
+        )
+        if dialog.exec_() == QDialog.Accepted:
+            # 刷新科室和模板列表
+            self._load_departments()
+            # 重新选当前科室
+            idx = self.dept_combo.findText(self.current_dept)
+            if idx >= 0:
+                self.dept_combo.setCurrentIndex(idx)
+            self.status_bar.showMessage("📝 模板已更新")
+
+
+# ==================== 模板管理对话框 ====================
+class TemplateManagerDialog(QDialog):
+    """模板增删改查管理界面"""
+
+    def __init__(self, template_engine, current_dept, parent=None):
+        super().__init__(parent)
+        self.template_engine = template_engine
+        self.current_dept = current_dept
+        self._editing_index = -1  # -1 = 新增模式，>=0 = 编辑模式
+        self.setWindowTitle("📝 模板管理")
+        self.setModal(True)
+        self.resize(700, 550)
+        self._init_ui()
+        self._refresh_dept_list()
+        self._refresh_template_list()
+
+    def _init_ui(self):
+        layout = QVBoxLayout(self)
+
+        # 上部：科室选择 + 模板列表
+        top_split = QWidget()
+        top_layout = QHBoxLayout(top_split)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 科室列表
+        dept_widget = QWidget()
+        dept_layout = QVBoxLayout(dept_widget)
+        dept_layout.setContentsMargins(0, 0, 0, 0)
+        dept_layout.addWidget(QLabel("科室："))
+        self.dept_list = QListWidget()
+        self.dept_list.setMaximumWidth(120)
+        self.dept_list.itemClicked.connect(self._on_dept_selected)
+        dept_layout.addWidget(self.dept_list)
+        top_layout.addWidget(dept_widget)
+
+        # 模板列表
+        tpl_widget = QWidget()
+        tpl_layout = QVBoxLayout(tpl_widget)
+        tpl_layout.setContentsMargins(0, 0, 0, 0)
+        tpl_layout.addWidget(QLabel("模板："))
+        self.tpl_list = QListWidget()
+        self.tpl_list.itemClicked.connect(self._on_template_selected)
+        tpl_layout.addWidget(self.tpl_list)
+
+        # 模板操作按钮
+        tpl_btn_bar = QWidget()
+        tpl_btn_layout = QHBoxLayout(tpl_btn_bar)
+        tpl_btn_layout.setContentsMargins(0, 5, 0, 0)
+        add_tpl_btn = QPushButton("➕ 新建")
+        add_tpl_btn.clicked.connect(self._add_template)
+        del_tpl_btn = QPushButton("🗑 删除")
+        del_tpl_btn.clicked.connect(self._delete_template)
+        tpl_btn_layout.addWidget(add_tpl_btn)
+        tpl_btn_layout.addWidget(del_tpl_btn)
+        tpl_layout.addWidget(tpl_btn_bar)
+
+        top_layout.addWidget(tpl_widget)
+        layout.addWidget(top_split)
+
+        # 中部：模板编辑区
+        edit_group = QGroupBox("模板内容编辑")
+        edit_layout = QVBoxLayout(edit_group)
+
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("模板名称："))
+        self.name_edit = QLineEdit()
+        name_layout.addWidget(self.name_edit)
+        edit_layout.addLayout(name_layout)
+
+        self.content_edit = QTextEdit()
+        self.content_edit.setPlaceholderText("在此编辑模板内容...\n用「字段名：」格式定义病历字段")
+        self.content_edit.setMinimumHeight(200)
+        edit_layout.addWidget(self.content_edit)
+
+        layout.addWidget(edit_group)
+
+        # 底部按钮
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("✓ 保存")
+        save_btn.clicked.connect(self._save_template)
+        save_btn.setDefault(True)
+        bottom.addWidget(cancel_btn)
+        bottom.addWidget(save_btn)
+        layout.addLayout(bottom)
+
+    def _refresh_dept_list(self):
+        """刷新科室列表"""
+        self.dept_list.clear()
+        depts = self.template_engine.get_departments()
+        for dept in depts:
+            self.dept_list.addItem(dept)
+        # 选中当前科室
+        for i in range(self.dept_list.count()):
+            if self.dept_list.item(i).text() == self.current_dept:
+                self.dept_list.setCurrentRow(i)
+                break
+
+    def _refresh_template_list(self):
+        """刷新当前科室的模板列表"""
+        self.tpl_list.clear()
+        dept = self._get_selected_dept()
+        if not dept:
+            return
+        templates = self.template_engine.get_templates(dept)
+        for t in templates:
+            self.tpl_list.addItem(t["name"])
+
+    def _get_selected_dept(self):
+        item = self.dept_list.currentItem()
+        return item.text() if item else ""
+
+    def _on_dept_selected(self, item):
+        """切换科室"""
+        self._editing_index = -1
+        self._refresh_template_list()
+        self.name_edit.clear()
+        self.content_edit.clear()
+
+    def _on_template_selected(self, item):
+        """选中模板，加载内容"""
+        dept = self._get_selected_dept()
+        if not dept:
+            return
+        tpl_name = item.text()
+        content = self.template_engine.get_template(dept, tpl_name)
+        if content is not None:
+            self.name_edit.setText(tpl_name)
+            self.content_edit.setPlainText(content)
+            self._editing_index = self.tpl_list.currentRow()
+
+    def _add_template(self):
+        """新增模板"""
+        dept = self._get_selected_dept()
+        if not dept:
+            QMessageBox.information(self, "提示", "请先选择科室")
+            return
+        self._editing_index = -1
+        self.name_edit.clear()
+        self.content_edit.clear()
+        self.name_edit.setFocus()
+
+    def _delete_template(self):
+        """删除模板"""
+        dept = self._get_selected_dept()
+        if not dept:
+            return
+        row = self.tpl_list.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "提示", "请先选择要删除的模板")
+            return
+        tpl_name = self.tpl_list.item(row).text()
+        confirm = QMessageBox.question(
+            self, "确认删除",
+            f"确定删除模板「{tpl_name}」吗？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if confirm == QMessageBox.Yes:
+            templates = self.template_engine.get_templates(dept)
+            if row < len(templates):
+                templates.pop(row)
+                self._save_dept_templates(dept, templates)
+                self._refresh_template_list()
+                self.name_edit.clear()
+                self.content_edit.clear()
+                self._editing_index = -1
+                self.status_bar.showMessage(f"📝 模板已删除：{tpl_name}")
+
+    def _save_template(self):
+        """保存模板"""
+        dept = self._get_selected_dept()
+        if not dept:
+            QMessageBox.warning(self, "提示", "请选择科室")
+            return
+        name = self.name_edit.text().strip()
+        content = self.content_edit.toPlainText().strip()
+        if not name:
+            QMessageBox.warning(self, "提示", "请输入模板名称")
+            return
+        if not content:
+            QMessageBox.warning(self, "提示", "请输入模板内容")
+            return
+
+        templates = self.template_engine.get_templates(dept)
+        if self._editing_index >= 0 and self._editing_index < len(templates):
+            # 更新已有模板
+            templates[self._editing_index] = {"name": name, "content": content}
+        else:
+            # 新增模板
+            templates.append({"name": name, "content": content})
+
+        self._save_dept_templates(dept, templates)
+        self._refresh_template_list()
+        # 选中刚保存的模板
+        for i in range(self.tpl_list.count()):
+            if self.tpl_list.item(i).text() == name:
+                self.tpl_list.setCurrentRow(i)
+                break
+        self._editing_index = self.tpl_list.currentRow()
+        self.accept()
+
+    def _save_dept_templates(self, dept, templates):
+        """保存科室模板到文件"""
+        import json
+        import os
+        templates_dir = os.path.join(os.path.dirname(__file__), "templates")
+        path = os.path.join(templates_dir, f"{dept}.json")
+        data = {"templates": templates}
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        # 同时更新内存中的模板
+        self.template_engine.load_templates()
+
+
+# ==================== 病历结构化对话框 ====================
+class SectionDialog(QDialog):
+    """病历结构化编辑对话框"""
+
+    # 标准病历字段（按常见顺序排列）
+    STANDARD_FIELDS = [
+        "主诉", "现病史", "既往史", "体格检查", "辅助检查",
+        "初步诊断", "诊疗经过", "出院情况", "出院医嘱",
+        "术前诊断", "手术名称", "术中情况", "术后诊断", "术后医嘱",
+        # 影像科字段
+        "检查项目", "检查部位", "检查方法", "影像表现", "诊断意见",
+        "增强特征", "血管描述", "超声所见", "超声提示",
+        "建议",
+        "急救措施", "用药情况", "效果评估",
+        "日期", "患者情况", "处理意见"
+    ]
+
+    def __init__(self, parser, raw_text, parent=None):
+        super().__init__(parent)
+        self.parser = parser
+        self.raw_text = raw_text
+        self.field_edits = {}
+        self.setWindowTitle("📋 病历结构化")
+        self.setModal(True)
+        self.resize(750, 600)
+        self._init_ui()
+
+    def _init_ui(self):
+        # 先解析文本
+        sections = self.parser.parse(self.raw_text)
+
+        layout = QVBoxLayout(self)
+
+        # 顶部说明
+        info = QLabel(f"从语音文本中识别出 {len(sections)} 个病历部分，可逐项编辑")
+        info.setStyleSheet("color: #b8c5d6; font-size: 12px; padding: 5px;")
+        layout.addWidget(info)
+
+        # 滚动区域
+        from PyQt5.QtWidgets import QScrollArea
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("""
+            QScrollArea {
+                border: 1px solid rgba(0,212,255,0.1);
+                border-radius: 8px;
+                background: rgba(255,255,255,0.02);
+            }
+        """)
+
+        container = QWidget()
+        form_layout = QVBoxLayout(container)
+        form_layout.setSpacing(8)
+
+        # 为每个标准字段创建输入框
+        for field in self.STANDARD_FIELDS:
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(8)
+
+            # 字段标签
+            label = QLabel(f"{field}：")
+            label.setFixedWidth(70)
+            label.setStyleSheet("color: #00d4ff; font-size: 13px; font-weight: bold;")
+            row_layout.addWidget(label)
+
+            # 内容输入框
+            edit = QLineEdit()
+            content = sections.get(field, "")
+            edit.setText(content)
+            edit.setPlaceholderText(f"请输入{field}...")
+            edit.setStyleSheet("""
+                QLineEdit {
+                    background: rgba(255,255,255,0.05);
+                    border: 1px solid rgba(0,212,255,0.15);
+                    border-radius: 6px;
+                    padding: 6px 10px;
+                    color: #e0e0e0;
+                    font-size: 13px;
+                }
+                QLineEdit:focus {
+                    border: 1px solid rgba(0,212,255,0.4);
+                }
+            """)
+            row_layout.addWidget(edit)
+            self.field_edits[field] = edit
+
+            # 如果有内容，高亮标签
+            if content:
+                label.setStyleSheet("color: #51cf66; font-size: 13px; font-weight: bold;")
+
+            form_layout.addWidget(row)
+
+        scroll.setWidget(container)
+        layout.addWidget(scroll)
+
+        # 底部按钮
+        bottom = QHBoxLayout()
+        bottom.addStretch()
+
+        clear_btn = QPushButton("🗑 清空")
+        clear_btn.clicked.connect(self._clear_all)
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,80,80,0.1);
+                color: #ff6b6b;
+                padding: 8px 20px;
+                border-radius: 15px;
+                border: 1px solid rgba(255,80,80,0.2);
+            }
+            QPushButton:hover { background: rgba(255,80,80,0.2); }
+        """)
+        bottom.addWidget(clear_btn)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        cancel_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(255,255,255,0.1);
+                color: #b8c5d6;
+                padding: 8px 20px;
+                border-radius: 15px;
+                border: 1px solid rgba(255,255,255,0.1);
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.15); }
+        """)
+        bottom.addWidget(cancel_btn)
+
+        confirm_btn = QPushButton("✓ 确认填充")
+        confirm_btn.clicked.connect(self._confirm)
+        confirm_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00d4ff, stop:1 #0066ff);
+                color: #0a0e27;
+                font-weight: bold;
+                padding: 8px 24px;
+                border-radius: 15px;
+            }
+            QPushButton:hover { padding: 8px 28px; }
+        """)
+        bottom.addWidget(confirm_btn)
+
+        layout.addLayout(bottom)
+
+    def _clear_all(self):
+        """清空所有字段"""
+        for edit in self.field_edits.values():
+            edit.clear()
+
+    def _confirm(self):
+        """确认，生成结构化文本"""
+        self.accept()
+
+    def get_result(self):
+        """获取结构化后的病历文本"""
+        lines = []
+        for field in self.STANDARD_FIELDS:
+            edit = self.field_edits.get(field)
+            if edit:
+                content = edit.text().strip()
+                if content:
+                    lines.append(f"{field}：{content}")
+        return "\n\n".join(lines)
+
+
+# ==================== 启动入口 ====================
+def main():
+    app = QApplication(sys.argv)
+    app.setStyle('Fusion')
+
+    # 设置全局字体
+    font = QFont("Microsoft YaHei", 11)
+    app.setFont(font)
+
+    window = MedVoiceApp()
+    window.show()
+
+    sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

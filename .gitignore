@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# ASR 模型文件（约2GB，需单独下载）
+星衍病历智能录入系统/model/
+
+# 日志
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Canvas
+*.canvas.tsx
+*.canvas.data.json
+*.canvas.status.json
+
+# 运行时生成的热词文件
+.hotwords_current.txt
+
+# 系统文件
+Thumbs.db
