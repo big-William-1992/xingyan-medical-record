@@ -35,6 +35,8 @@ from asr_engine import get_microphone_list
 from diagnosis_assistant import DiagnosisAssistant
 from license_manager import LicenseManager
 from activation_dialog import ActivationDialog, TrialInfoBar
+from phrase_library import PhraseLibrary
+from phrase_dialog import PhraseDialog
 
 
 # ==================== 语音识别线程 ====================
@@ -722,6 +724,10 @@ class MedVoiceApp(QMainWindow):
         self.diagnosis_assistant = DiagnosisAssistant()
         self.diagnosis_thread = None
 
+        # 常用语句库
+        self.phrase_lib = PhraseLibrary()
+        self._phrase_dialog = None
+
         # 崩溃日志
         self.crash_logger = CrashLogger()
         self.crash_logger.log_event("应用启动")
@@ -754,6 +760,54 @@ class MedVoiceApp(QMainWindow):
 
         # 光标移动时自动检测当前字段
         self.text_edit.cursorPositionChanged.connect(self._on_cursor_moved)
+
+        # 启动时：自动备份数据库 + 从历史病历预热用户热词
+        self._startup_maintenance()
+
+    def _startup_maintenance(self):
+        """启动维护：数据库自动备份 + 从历史病历提取高频词作为用户热词"""
+        if not self.db:
+            return
+        try:
+            path = self.db.auto_backup()
+            self.crash_logger.log_event("数据库自动备份: %s" % path)
+        except Exception as e:
+            print(f"[Main] 自动备份失败: {e}")
+        # 从历史病历学习高频医学词 → 用户自适应热词
+        try:
+            self._refresh_user_hotwords(silent=True)
+        except Exception as e:
+            print(f"[Main] 用户热词预热失败: {e}")
+
+    def _refresh_user_hotwords(self, silent=False):
+        """从当前用户历史病历中提取高频专业词，更新 ASR 用户自适应热词"""
+        if not self.db:
+            return
+        user_id = None if self.current_user.get("role") == "admin" else self.current_user.get("id")
+        records = self.db.list_records(user_id=user_id)
+        if not records:
+            if not silent:
+                self.status_bar.showMessage("暂无历史病历，无法提取个人热词")
+            return
+        from collections import Counter
+        counter = Counter()
+        # 用分类器/解析器已有的医学词典做候选，统计 2-6 字中文词片段
+        for r in records[:200]:
+            content = r.get("content", "") or ""
+            # 抽取词典中出现过的活跃词
+            for w in self.corrector.active_words:
+                if len(w) >= 2 and w in content:
+                    counter[w] += 1
+        # 取高频前 200，出现次数≥2
+        common = [w for w, c in counter.most_common(200) if c >= 2]
+        if common:
+            self.asr.update_user_hotwords(common)
+            # 重新按当前科室加载热词以生效
+            self.asr.set_hotwords(self.current_dept)
+            if not silent:
+                self.status_bar.showMessage("已从 %d 份病历提取 %d 个个人高频词并加入热词" % (len(records), len(common)))
+        elif not silent:
+            self.status_bar.showMessage("未提取到足够的高频词")
 
     def _on_cursor_moved(self):
         """光标移动时，检测当前所在的病历字段"""
@@ -884,6 +938,12 @@ class MedVoiceApp(QMainWindow):
         copy_btn.clicked.connect(self._copy_all_text)
         toolbar.addWidget(copy_btn)
 
+        # 常用语句库按钮（F3）
+        phrase_btn = QPushButton("💬 常用语")
+        phrase_btn.setToolTip("打开常用语句库，一键插入常用短语（F3）")
+        phrase_btn.clicked.connect(self._open_phrase_library)
+        toolbar.addWidget(phrase_btn)
+
         # 模板管理按钮
         tpl_btn = QPushButton("📝 模板管理")
         tpl_btn.clicked.connect(self._open_template_manager)
@@ -929,6 +989,12 @@ class MedVoiceApp(QMainWindow):
         record_lib_btn.clicked.connect(self._open_record_manager)
         toolbar.addWidget(record_lib_btn)
 
+        # 数据备份/恢复按钮
+        backup_btn = QPushButton("🛡 备份")
+        backup_btn.setToolTip("备份/恢复病历数据库，或刷新个人热词")
+        backup_btn.clicked.connect(self._open_backup_menu)
+        toolbar.addWidget(backup_btn)
+
         # 用户管理按钮（仅管理员）
         if self.current_user.get("role") == "admin":
             user_mgr_btn = QPushButton("👥 用户管理")
@@ -952,6 +1018,18 @@ class MedVoiceApp(QMainWindow):
         record_shortcut.setShortcut("F2")
         record_shortcut.triggered.connect(self._toggle_recording)
         self.addAction(record_shortcut)
+
+        # 常用语句库快捷键 F3
+        phrase_shortcut = QAction(self)
+        phrase_shortcut.setShortcut("F3")
+        phrase_shortcut.triggered.connect(self._open_phrase_library)
+        self.addAction(phrase_shortcut)
+
+        # 一键纠错快捷键 F4
+        correct_shortcut = QAction(self)
+        correct_shortcut.setShortcut("F4")
+        correct_shortcut.triggered.connect(self._run_correction)
+        self.addAction(correct_shortcut)
 
         # 中央部件
         central = QWidget()
@@ -1277,6 +1355,37 @@ class MedVoiceApp(QMainWindow):
             self.status_bar.showMessage(
                 f"已加载模板：{template_name} | 可以开始语音输入"
             )
+
+    def _recommend_template(self, text):
+        """根据当前文本内容，在所有科室模板中推荐最匹配的一个（仅状态栏提示，不自动切换）"""
+        try:
+            if not text or len(text.strip()) < 4:
+                return
+            best = None  # (score, dept, name)
+            for dept in self.template_engine.get_departments():
+                for t in self.template_engine.get_templates(dept):
+                    name = t.get("name", "")
+                    if not name:
+                        continue
+                    # 模板名（如疾病名）直接出现在文本中 → 强信号
+                    score = 0
+                    if name in text:
+                        score += 3
+                    # 拆分名称关键字（去掉“-中医”等后缀）逐字匹配
+                    core = name.split("-")[0].replace("【中医】", "")
+                    if core and core in text and core != name:
+                        score += 2
+                    if score > 0 and (best is None or score > best[0]):
+                        best = (score, dept, name)
+            if best and best[0] >= 2:
+                _, dept, name = best
+                # 已经选中该模板则不提示
+                if self.template_combo.currentText() != name:
+                    self.status_bar.showMessage(
+                        "💡 推荐模板：%s - %s（可在上方模板下拉选择）" % (dept, name)
+                    )
+        except Exception as e:
+            print(f"[UI] 模板推荐失败: {e}")
 
     def _autofill_progress_note(self):
         """将当前入院记录/首页病程的内容自动填入首次病程记录"""
@@ -1848,6 +1957,8 @@ class MedVoiceApp(QMainWindow):
             self.partial_label.setText("✓ 识别完成")
             self.status_bar.showMessage(f"识别完成，共 {len(text)} 字")
             print(f"[UI] 文本已插入编辑器")
+            # 智能推荐模板（非侵入，仅状态栏提示）
+            self._recommend_template(self.text_edit.toPlainText())
 
         except Exception as e:
             print(f"[UI] 处理识别结果时出错: {e}")
@@ -2105,6 +2216,10 @@ class MedVoiceApp(QMainWindow):
         md_action.triggered.connect(lambda: self._export_as(text, "md"))
         menu.addAction(md_action)
 
+        docx_action = QAction("📘 导出 Word (.docx)", self)
+        docx_action.triggered.connect(lambda: self._export_docx(text))
+        menu.addAction(docx_action)
+
         preview_action = QAction("🖨 打印预览", self)
         preview_action.triggered.connect(lambda: self._print_preview(text))
         menu.addAction(preview_action)
@@ -2159,6 +2274,60 @@ class MedVoiceApp(QMainWindow):
                 result.append(f"{line}\n")
         return '\n'.join(result)
 
+    def _export_docx(self, text):
+        """导出为 Word (.docx)。需 python-docx，未安装时提示并降级。"""
+        try:
+            from docx import Document
+            from docx.shared import Pt
+            from docx.oxml.ns import qn
+        except ImportError:
+            ret = QMessageBox.question(
+                self, "缺少依赖",
+                "导出 Word 需要 python-docx 库，当前未安装。\n"
+                "可在命令行执行：pip install python-docx\n\n"
+                "是否改为导出 .txt 文本？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes
+            )
+            if ret == QMessageBox.Yes:
+                self._export_as(text, "txt")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 Word",
+            os.path.join(os.path.expanduser("~"), "Desktop", "病历记录.docx"),
+            "Word 文档 (*.docx)"
+        )
+        if not path:
+            return
+        try:
+            doc = Document()
+            # 设置中文字体
+            style = doc.styles["Normal"]
+            style.font.name = "宋体"
+            style.font.size = Pt(11)
+            style.element.rcPr.rFonts.set(qn("w:eastAsia"), "宋体")
+
+            title = doc.add_heading("病历记录", level=1)
+            for line in text.split("\n"):
+                line = line.rstrip()
+                if not line:
+                    doc.add_paragraph("")
+                    continue
+                # 字段名加粗
+                if "：" in line or ":" in line:
+                    parts = re.split(r"[：:]", line, 1)
+                    if len(parts) == 2:
+                        p = doc.add_paragraph()
+                        run = p.add_run(parts[0].strip() + "：")
+                        run.bold = True
+                        p.add_run(parts[1].strip())
+                        continue
+                doc.add_paragraph(line)
+            doc.save(path)
+            self.status_bar.showMessage(f"已导出 Word：{path}")
+        except Exception as e:
+            QMessageBox.warning(self, "导出失败", str(e))
+
     def _print_preview(self, text):
         """打印预览"""
         from PyQt5.QtPrintSupport import QPrintPreviewDialog, QPrinter
@@ -2185,6 +2354,84 @@ class MedVoiceApp(QMainWindow):
                 html += f"<p>{escaped}</p>"
         doc.setHtml(html)
         doc.print_(printer)
+
+    def _open_phrase_library(self):
+        """打开常用语句库（非模态，可连续插入多条）"""
+        if self._phrase_dialog is None:
+            self._phrase_dialog = PhraseDialog(self.phrase_lib, self)
+            self._phrase_dialog.phrase_selected.connect(self._insert_term_at_cursor)
+        self._phrase_dialog.show()
+        self._phrase_dialog.raise_()
+        self._phrase_dialog.activateWindow()
+
+    def _open_backup_menu(self):
+        """备份/恢复/刷新热词菜单"""
+        menu = QMenu(self)
+        backup_action = QAction("💾 立即备份到文件", self)
+        backup_action.triggered.connect(self._backup_now)
+        menu.addAction(backup_action)
+
+        restore_action = QAction("♻ 从备份文件恢复", self)
+        restore_action.triggered.connect(self._restore_backup)
+        menu.addAction(restore_action)
+
+        menu.addSeparator()
+        hotword_action = QAction("🔥 从历史病历刷新个人热词", self)
+        hotword_action.triggered.connect(lambda: self._refresh_user_hotwords(silent=False))
+        menu.addAction(hotword_action)
+
+        sender_btn = self.sender()
+        if sender_btn and hasattr(sender_btn, "geometry"):
+            menu.exec_(self.mapToGlobal(sender_btn.geometry().bottomLeft()))
+        else:
+            menu.exec_(self.mapToGlobal(self.record_btn.geometry().bottomLeft()))
+
+    def _backup_now(self):
+        """手动备份数据库到用户选定位置"""
+        if not self.db:
+            QMessageBox.warning(self, "提示", "数据库未初始化")
+            return
+        from datetime import datetime
+        default_name = "病历备份_%s.db" % datetime.now().strftime("%Y%m%d_%H%M%S")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "备份数据库",
+            os.path.join(os.path.expanduser("~"), "Desktop", default_name),
+            "SQLite 数据库 (*.db)"
+        )
+        if not path:
+            return
+        try:
+            self.db.backup_to(path)
+            QMessageBox.information(self, "备份成功", "已备份到：\n%s" % path)
+        except Exception as e:
+            QMessageBox.warning(self, "备份失败", str(e))
+
+    def _restore_backup(self):
+        """从备份文件恢复数据库"""
+        if not self.db:
+            QMessageBox.warning(self, "提示", "数据库未初始化")
+            return
+        ret = QMessageBox.warning(
+            self, "确认恢复",
+            "恢复将用备份数据覆盖当前所有病历，此操作不可撤销！\n建议先做一次备份。确定继续？",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No
+        )
+        if ret != QMessageBox.Yes:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择备份文件",
+            os.path.expanduser("~"), "SQLite 数据库 (*.db)"
+        )
+        if not path:
+            return
+        try:
+            self.db.restore_from(path)
+            QMessageBox.information(
+                self, "恢复成功",
+                "已从备份恢复。请重启软件以确保数据一致。"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "恢复失败", str(e))
 
     def _open_rule_manager(self):
         """打开规则管理对话框"""
@@ -2217,6 +2464,15 @@ class MedVoiceApp(QMainWindow):
                 department=dept, template_name=template_name, content=content
             )
             self.status_bar.showMessage("💾 病历已更新（已记录版本）")
+
+        # 从本次保存的内容增量学习高频专业词 → 用户自适应热词
+        try:
+            learned = [w for w in self.corrector.active_words
+                       if len(w) >= 2 and content.count(w) >= 1]
+            if learned:
+                self.asr.update_user_hotwords(learned)
+        except Exception as e:
+            print(f"[Main] 增量学习热词失败: {e}")
 
     def _extract_patient_name(self, content):
         """从病历文本中提取“姓名：XXX”字段，提不到返回空字符串"""

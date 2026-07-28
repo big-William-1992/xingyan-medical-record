@@ -41,15 +41,20 @@ class ASREngine:
         self._recording_started = threading.Event()
         self._current_hotwords = ""
         self.input_device = None  # 录音设备 index（None = 系统默认）
+        self.enable_denoise = True  # 录音降噪预处理开关
 
         # 热词文件路径（和 asr_engine.py 同目录）
         base_dir = os.path.dirname(os.path.abspath(__file__))
         self._hotwords_path = os.path.join(base_dir, "hotwords.txt")
         self._postprocess_path = os.path.join(base_dir, "postprocess_hotwords.txt")
+        # 用户自适应热词（从历史病历提取的高频词，每行一个）
+        self._user_hotwords_path = os.path.join(base_dir, "user_hotwords.txt")
+        self._user_hotwords = []
         self._hotword_sections = {}  # {section_name: [words]}
         self._hotword_file = ""  # 当前科室热词临时文件路径
         self._postprocess_matcher = None  # 文本级纠错 matcher
         self._load_hotwords()
+        self._load_user_hotwords()
         self._build_postprocess_matcher()
 
         # 加载 Paraformer + VAD + 标点模型
@@ -86,6 +91,41 @@ class ASREngine:
         for section, words in self._hotword_sections.items():
             print(f"[ASR] 热词 [{section}]: {len(words)} 个")
 
+    def _load_user_hotwords(self):
+        """加载用户自适应热词（user_hotwords.txt，每行一个）"""
+        self._user_hotwords = []
+        if not os.path.exists(self._user_hotwords_path):
+            return
+        try:
+            with open(self._user_hotwords_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    w = line.strip()
+                    if w and not w.startswith("#"):
+                        self._user_hotwords.append(w)
+            print(f"[ASR] 用户自适应热词: {len(self._user_hotwords)} 个")
+        except Exception as e:
+            print(f"[ASR] 加载用户热词失败: {e}")
+
+    def update_user_hotwords(self, words, max_words=300):
+        """写入/合并用户自适应热词并重新加载。words: 词语列表。"""
+        merged = list(dict.fromkeys(
+            [w.strip() for w in (self._user_hotwords + list(words)) if w and w.strip()]
+        ))
+        # 保留最新的 max_words 个（新词在后，优先保留）
+        if len(merged) > max_words:
+            merged = merged[-max_words:]
+        try:
+            with open(self._user_hotwords_path, "w", encoding="utf-8") as f:
+                f.write("# 用户自适应热词（从历史病历自动提取，可手动编辑）\n")
+                for w in merged:
+                    f.write(w + "\n")
+            self._user_hotwords = merged
+            print(f"[ASR] 用户热词已更新: {len(merged)} 个")
+            return True
+        except Exception as e:
+            print(f"[ASR] 写入用户热词失败: {e}")
+            return False
+
     def set_hotwords(self, department=""):
         """根据科室设置热词（通用 + 科室专用），生成热词文件供模型使用"""
         # 科室名 → 热词分区名映射
@@ -108,6 +148,13 @@ class ASREngine:
         # 中医通用热词（所有科室均可加载）
         if "中医通用" in self._hotword_sections:
             words.extend(self._hotword_sections["中医通用"])
+
+        # 用户自适应热词（从历史病历学到的高频词）
+        if self._user_hotwords:
+            words.extend(self._user_hotwords)
+
+        # 去重（保序）
+        words = list(dict.fromkeys(words))
 
         self._current_hotwords = " ".join(words)
 
@@ -210,6 +257,56 @@ class ASREngine:
 
     # ─── 识别 ─────────────────────────────────────────────
 
+    def _denoise(self, audio_int16):
+        """轻量降噪预处理（纯 numpy，无额外依赖）：
+        1) 去直流偏置；2) 一阶高通滤波去低频嗡嗡声；3) 温和噪声门。
+        输入/输出均为 int16 一维数组。降噪保守，避免损伤语音。
+        """
+        try:
+            if audio_int16 is None or len(audio_int16) == 0:
+                return audio_int16
+            x = audio_int16.astype(np.float32)
+
+            # 1) 去直流偏置
+            x -= np.mean(x)
+
+            # 2) 一阶高通滤波：y[n] = a*(y[n-1] + x[n] - x[n-1])
+            #    a≈0.97 对应约 80Hz 截止（16k 采样），去除低频背景嗡鸣
+            a = 0.97
+            y = np.empty_like(x)
+            y[0] = x[0]
+            # 向量化 IIR 不易；样本量为数十万级，循环可接受但慢，
+            # 用差分近似高通：x[n]-x[n-1] 再叠加衰减，避免逐样本 Python 循环
+            diff = np.empty_like(x)
+            diff[0] = 0.0
+            diff[1:] = x[1:] - x[:-1]
+            # 用指数加权累积近似 IIR 反馈
+            y = a * (diff + x * (1 - a))
+
+            # 3) 温和噪声门：估计噪声底噪（最小 10% 能量帧），
+            #    低于阈值的样本按比例衰减而非置零，避免断音
+            frame = 320  # 20ms @16k
+            n_frames = len(y) // frame
+            if n_frames >= 5:
+                trimmed = y[:n_frames * frame].reshape(n_frames, frame)
+                energies = np.sqrt(np.mean(trimmed ** 2, axis=1) + 1e-9)
+                noise_floor = np.percentile(energies, 10)
+                gate_thresh = noise_floor * 1.5
+                gains = np.ones(n_frames, dtype=np.float32)
+                weak = energies < gate_thresh
+                gains[weak] = 0.5  # 弱帧衰减一半而非静音
+                gain_full = np.repeat(gains, frame)
+                y[:len(gain_full)] *= gain_full
+
+            # 防止溢出并转回 int16
+            peak = np.max(np.abs(y)) if len(y) else 0
+            if peak > 32767:
+                y = y * (32767.0 / peak)
+            return np.clip(y, -32768, 32767).astype(np.int16)
+        except Exception as e:
+            print(f"[ASR] 降噪处理失败，使用原始音频: {e}")
+            return audio_int16
+
     def _recognize_file(self, wav_path):
         """用 Paraformer + VAD 识别音频文件（双层热词：模型级 + 文本级）"""
         if not self.is_ready():
@@ -309,6 +406,10 @@ class ASREngine:
 
             if max_val < 100:
                 print("[ASR] 警告：录音振幅太小，可能没有采集到声音")
+
+            # 降噪预处理（高通滤波 + 噪声门），提升嘈杂环境识别率
+            if self.enable_denoise:
+                audio_data = self._denoise(audio_data)
 
             with wave.open(tmp_path, 'wb') as wf:
                 wf.setnchannels(1)

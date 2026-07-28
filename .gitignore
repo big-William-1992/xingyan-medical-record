@@ -33,6 +33,10 @@ logs/
 
 # 运行时生成的热词文件
 .hotwords_current.txt
+星衍病历智能录入系统/user_hotwords.txt
+
+# 常用语句库（用户可编辑，运行时自动生成默认）
+星衍病历智能录入系统/phrases.json
 
 # 授权文件（机器绑定，本地私有）
 星衍病历智能录入系统/license.dat

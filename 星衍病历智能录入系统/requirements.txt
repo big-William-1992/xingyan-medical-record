@@ -3,3 +3,6 @@ numpy>=1.20
 sounddevice>=0.4.6
 funasr>=1.1.0
 modelscope>=1.14.0
+
+# 可选：导出 Word (.docx) 需要；未安装时自动降级为 txt 导出
+python-docx>=0.8.11

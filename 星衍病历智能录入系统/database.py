@@ -324,6 +324,50 @@ class Database:
         except Exception:
             pass
 
+    # ==================== 备份 / 恢复 ====================
+    def backup_to(self, dest_path):
+        """将数据库完整备份到 dest_path（使用 SQLite 在线备份 API，安全一致）。"""
+        with self._op_lock:
+            dest = sqlite3.connect(dest_path)
+            try:
+                self.conn.backup(dest)
+            finally:
+                dest.close()
+        return dest_path
+
+    def auto_backup(self, backup_dir=None, keep=10):
+        """自动备份到 data/backups/records_YYYYMMDD_HHMMSS.db，仅保留最近 keep 份。"""
+        if backup_dir is None:
+            backup_dir = os.path.join(os.path.dirname(self.db_path), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        dest = os.path.join(backup_dir, "records_%s.db" % stamp)
+        self.backup_to(dest)
+        # 清理旧备份
+        try:
+            backups = sorted(
+                f for f in os.listdir(backup_dir)
+                if f.startswith("records_") and f.endswith(".db")
+            )
+            for old in backups[:-keep]:
+                os.remove(os.path.join(backup_dir, old))
+        except Exception:
+            pass
+        return dest
+
+    def restore_from(self, src_path):
+        """从备份文件恢复（覆盖当前数据库）。调用方应先确认并重启。"""
+        if not os.path.exists(src_path):
+            raise FileNotFoundError(src_path)
+        with self._op_lock:
+            src = sqlite3.connect(src_path)
+            try:
+                src.backup(self.conn)
+                self.conn.commit()
+            finally:
+                src.close()
+        return True
+
 
 # 便捷单例获取
 def get_db():
