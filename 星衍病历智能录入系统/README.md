@@ -8,6 +8,8 @@
 - 内外科 11 个常见病模板，语音输入核心信息一键替换
 - 支持内科/外科/影像科模板管理
 
+> 📦 **离线环境 / 首次下载太慢？** 看 [离线整包部署（GitHub Releases）](#离线整包部署github-releases) 章节，下载预打包模型压缩包，解压即用。
+
 ---
 
 ## 环境要求
@@ -52,6 +54,8 @@ pip install -r requirements.txt
 ### 第三步：下载语音识别模型（约 2GB）
 
 系统使用 FunASR 框架，**首次运行时会自动下载模型**，无需手动操作。
+
+> 💡 **不确定模型是否就位？** 双击运行 `校验模型.bat`（Windows）或 `python check_model.py`（macOS/Linux），会自动检测 3 个模型并给出修复建议。
 
 如需手动下载或离线部署，模型来源如下：
 
@@ -161,8 +165,10 @@ python main.py
 ├── field_words.json       ← 字段关键词
 ├── correction_rules.json  ← 纠错规则
 ├── requirements.txt       ← Python 依赖
+├── check_model.py         ← 模型目录校验脚本
 ├── 启动.bat               ← Windows 一键启动
-└── 启动.sh                ← macOS/Linux 一键启动
+├── 启动.sh                ← macOS/Linux 一键启动
+└── 校验模型.bat           ← Windows 双击校验模型
 ```
 
 ---
