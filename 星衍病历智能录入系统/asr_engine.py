@@ -40,6 +40,7 @@ class ASREngine:
         self._record_thread = None
         self._recording_started = threading.Event()
         self._current_hotwords = ""
+        self.input_device = None  # 录音设备 index（None = 系统默认）
 
         # 热词文件路径（和 asr_engine.py 同目录）
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -92,6 +93,8 @@ class ASREngine:
             "影像科": "影像科专用",
             "内科": "内科专用",
             "外科": "外科专用",
+            "妇产科": "妇产科专用",
+            "儿科": "儿科专用",
         }
 
         # 通用热词
@@ -101,6 +104,10 @@ class ASREngine:
         section = dept_map.get(department, "")
         if section and section in self._hotword_sections:
             words.extend(self._hotword_sections[section])
+
+        # 中医通用热词（所有科室均可加载）
+        if "中医通用" in self._hotword_sections:
+            words.extend(self._hotword_sections["中医通用"])
 
         self._current_hotwords = " ".join(words)
 
@@ -184,7 +191,7 @@ class ASREngine:
                 channels=1,
                 dtype='int16',
                 callback=audio_callback,
-                device=None,
+                device=self.input_device,
             )
             stream.start()
             self._recording_started.set()  # 通知主线程：录音已开始
@@ -326,6 +333,11 @@ class ASREngine:
     def process_audio_file(self, wav_path):
         """处理已有的音频文件"""
         return self._recognize_file(wav_path)
+
+    def set_input_device(self, device_index):
+        """设置录音输入设备 index（None 为系统默认）"""
+        self.input_device = device_index
+        print(f"[ASR] 录音设备已设为: {device_index}")
 
 
 def get_microphone_list():

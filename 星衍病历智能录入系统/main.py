@@ -27,6 +27,14 @@ from rule_engine import RuleEngine
 from section_parser import SectionParser, SmartDictation
 from medical_classifier import MedicalClassifier
 from crash_logger import CrashLogger
+from database import Database
+from login_dialog import LoginDialog, UserManagerDialog
+from record_manager_dialog import RecordManagerDialog
+from voice_command import VoiceCommandParser
+from asr_engine import get_microphone_list
+from diagnosis_assistant import DiagnosisAssistant
+from license_manager import LicenseManager
+from activation_dialog import ActivationDialog, TrialInfoBar
 
 
 # ==================== 语音识别线程 ====================
@@ -74,6 +82,23 @@ class CorrectThread(QThread):
     def run(self):
         corrected, log = self.corrector.correct(self.text)
         self.correction_done.emit(corrected, log)
+
+
+# ==================== AI 辅助诊断线程 ====================
+class DiagnosisThread(QThread):
+    analysis_done = pyqtSignal(dict)
+
+    def __init__(self, assistant, text):
+        super().__init__()
+        self.assistant = assistant
+        self.text = text
+
+    def run(self):
+        try:
+            result = self.assistant.analyze(self.text)
+        except Exception as e:
+            result = {"error": str(e)}
+        self.analysis_done.emit(result)
 
 
 # ==================== 规则管理对话框 ====================
@@ -671,9 +696,18 @@ class FieldWordsPanel(QWidget):
 
 # ==================== 主窗口 ====================
 class MedVoiceApp(QMainWindow):
-    def __init__(self):
+    def __init__(self, db=None, current_user=None):
         super().__init__()
-        self.setWindowTitle("星衍AI智能病历录入系统 v1.0")
+        self.db = db
+        self.current_user = current_user or {}
+        # 当前正在编辑的病历 id（None 表示新病历）
+        self.current_record_id = None
+        uname = self.current_user.get("username", "")
+        title = "星衍AI智能病历录入系统 v1.0"
+        if uname:
+            role_txt = "管理员" if self.current_user.get("role") == "admin" else "医生"
+            title += "  |  当前用户：%s（%s）" % (uname, role_txt)
+        self.setWindowTitle(title)
         self.setGeometry(100, 100, 1200, 800)
 
         # 核心引擎
@@ -683,6 +717,10 @@ class MedVoiceApp(QMainWindow):
         self.parser = SectionParser()
         self.smart_dictation = SmartDictation(self.parser)
         self.classifier = MedicalClassifier()
+
+        # AI 辅助诊断（基于知识图谱）
+        self.diagnosis_assistant = DiagnosisAssistant()
+        self.diagnosis_thread = None
 
         # 崩溃日志
         self.crash_logger = CrashLogger()
@@ -699,6 +737,13 @@ class MedVoiceApp(QMainWindow):
         self.is_listening = False
         self.partial_text = ""
         self._auto_stop_timer = None
+        # 语音命令解析器
+        self.voice_command = VoiceCommandParser()
+        # 录音时长计时
+        self._record_start_ts = None
+        self._duration_timer = QTimer(self)
+        self._duration_timer.setInterval(500)
+        self._duration_timer.timeout.connect(self._update_record_duration)
 
         self._init_ui()
         self._apply_dark_theme()
@@ -806,6 +851,16 @@ class MedVoiceApp(QMainWindow):
         self.record_mode_combo.setMinimumWidth(140)
         toolbar.addWidget(self.record_mode_combo)
 
+        # 麦克风设备选择
+        mic_label = QLabel("  麦克风：")
+        toolbar.addWidget(mic_label)
+        self.mic_combo = QComboBox()
+        self.mic_combo.setMinimumWidth(150)
+        self.mic_combo.setToolTip("选择录音输入设备")
+        self._load_microphones()
+        self.mic_combo.currentIndexChanged.connect(self._on_mic_changed)
+        toolbar.addWidget(self.mic_combo)
+
         toolbar.addSeparator()
 
         # 纠错按钮
@@ -822,6 +877,12 @@ class MedVoiceApp(QMainWindow):
         save_btn = QPushButton("💾 导出")
         save_btn.clicked.connect(self._save_text)
         toolbar.addWidget(save_btn)
+
+        # 复制全文按钮（Ctrl+Shift+C）
+        copy_btn = QPushButton("📋 复制全文")
+        copy_btn.setToolTip("复制病历全文到剪贴板，便于粘贴进 HIS 系统（Ctrl+Shift+C）")
+        copy_btn.clicked.connect(self._copy_all_text)
+        toolbar.addWidget(copy_btn)
 
         # 模板管理按钮
         tpl_btn = QPushButton("📝 模板管理")
@@ -854,6 +915,43 @@ class MedVoiceApp(QMainWindow):
         crash_btn = QPushButton("📋 崩溃日志")
         crash_btn.clicked.connect(self._view_crash_log)
         toolbar.addWidget(crash_btn)
+
+        toolbar.addSeparator()
+
+        # 保存病历按钮（写入数据库，Ctrl+S）
+        save_record_btn = QPushButton("💾 保存病历")
+        save_record_btn.setToolTip("将当前病历保存到病历库（Ctrl+S）")
+        save_record_btn.clicked.connect(self._save_record)
+        toolbar.addWidget(save_record_btn)
+
+        # 病历库按钮
+        record_lib_btn = QPushButton("📚 病历库")
+        record_lib_btn.clicked.connect(self._open_record_manager)
+        toolbar.addWidget(record_lib_btn)
+
+        # 用户管理按钮（仅管理员）
+        if self.current_user.get("role") == "admin":
+            user_mgr_btn = QPushButton("👥 用户管理")
+            user_mgr_btn.clicked.connect(self._open_user_manager)
+            toolbar.addWidget(user_mgr_btn)
+
+        # 保存病历快捷键 Ctrl+S
+        save_shortcut = QAction(self)
+        save_shortcut.setShortcut("Ctrl+S")
+        save_shortcut.triggered.connect(self._save_record)
+        self.addAction(save_shortcut)
+
+        # 复制全文快捷键 Ctrl+Shift+C
+        copy_shortcut = QAction(self)
+        copy_shortcut.setShortcut("Ctrl+Shift+C")
+        copy_shortcut.triggered.connect(self._copy_all_text)
+        self.addAction(copy_shortcut)
+
+        # 录音开始/停止快捷键 F2
+        record_shortcut = QAction(self)
+        record_shortcut.setShortcut("F2")
+        record_shortcut.triggered.connect(self._toggle_recording)
+        self.addAction(record_shortcut)
 
         # 中央部件
         central = QWidget()
@@ -1038,6 +1136,68 @@ class MedVoiceApp(QMainWindow):
         """)
         right_layout.addWidget(self.text_edit)
 
+        # ==================== AI 辅助诊断面板 ====================
+        ai_group = QGroupBox("🔬 AI 辅助诊断")
+        ai_group.setStyleSheet("""
+            QGroupBox {
+                color: #00d4ff;
+                font-size: 13px;
+                font-weight: bold;
+                border: 1px solid rgba(0,212,255,0.2);
+                border-radius: 10px;
+                margin-top: 10px;
+                padding-top: 8px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 5px;
+            }
+        """)
+        ai_layout = QVBoxLayout(ai_group)
+        ai_layout.setContentsMargins(10, 8, 10, 10)
+
+        ai_header = QHBoxLayout()
+        self.ai_analyze_btn = QPushButton("🔬 分析当前病历")
+        self.ai_analyze_btn.clicked.connect(self._run_diagnosis)
+        self.ai_analyze_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #00d4ff, stop:1 #0088cc);
+                color: #0a0e27;
+                padding: 6px 16px;
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #00d4ff; }
+            QPushButton:disabled { background: #333; color: #666; }
+        """)
+        self.ai_status_label = QLabel("")
+        self.ai_status_label.setStyleSheet("color: #6b8a9a; font-size: 10px;")
+        ai_header.addWidget(self.ai_analyze_btn)
+        ai_header.addWidget(self.ai_status_label)
+        ai_header.addStretch()
+        ai_layout.addLayout(ai_header)
+
+        self.ai_result = QTextBrowser()
+        self.ai_result.setOpenExternalLinks(False)
+        self.ai_result.setStyleSheet("""
+            QTextBrowser {
+                background: rgba(255,255,255,0.03);
+                border: 1px solid rgba(0,212,255,0.15);
+                border-radius: 8px;
+                padding: 10px;
+                font-size: 13px;
+                color: #e0e0e0;
+            }
+        """)
+        self.ai_result.setPlaceholderText("点击「分析当前病历」，AI 将基于知识图谱给出可能诊断、用药审查、检查建议与风险预警。")
+        self.ai_result.setMinimumHeight(160)
+        ai_layout.addWidget(self.ai_result)
+
+        right_layout.addWidget(ai_group)
+
         splitter.addWidget(right_panel)
         splitter.setSizes([300, 900])
 
@@ -1047,6 +1207,12 @@ class MedVoiceApp(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("就绪 | 请先选择科室和模板")
+
+        # 试用期信息
+        self._license_mgr = LicenseManager()
+        trial_label = TrialInfoBar.create_label(self._license_mgr)
+        if trial_label.text():
+            self.status_bar.addPermanentWidget(trial_label)
 
     def _apply_dark_theme(self):
         """深色主题"""
@@ -1497,6 +1663,10 @@ class MedVoiceApp(QMainWindow):
         self.partial_text = ""
         self.text_edit.setFocus()
 
+        # 开始录音时长计时
+        self._record_start_ts = time.time()
+        self._duration_timer.start()
+
         self.listen_thread = ListenThread(self.asr)
         self.listen_thread.text_ready.connect(self._on_recognized)
         self.listen_thread.partial_text.connect(self._on_partial)
@@ -1519,6 +1689,10 @@ class MedVoiceApp(QMainWindow):
         self.record_btn.setChecked(False)
         self.crash_logger.log_event("录音停止")
 
+        # 停止录音时长计时
+        self._duration_timer.stop()
+        self._record_start_ts = None
+
         # 停止自动停止计时器
         if hasattr(self, '_auto_stop_timer') and self._auto_stop_timer:
             self._auto_stop_timer.stop()
@@ -1532,6 +1706,94 @@ class MedVoiceApp(QMainWindow):
         self.partial_label.setText("等待输入...")
         self.status_bar.showMessage("录音结束")
 
+    def _load_microphones(self):
+        """加载麦克风设备列表到下拉框"""
+        self.mic_combo.blockSignals(True)
+        self.mic_combo.clear()
+        self.mic_combo.addItem("系统默认", None)
+        try:
+            for dev in get_microphone_list():
+                self.mic_combo.addItem(dev["name"], dev["index"])
+        except Exception as e:
+            print(f"[UI] 加载麦克风列表失败: {e}")
+        self.mic_combo.blockSignals(False)
+
+    def _on_mic_changed(self, _index):
+        """切换录音设备"""
+        device_index = self.mic_combo.currentData()
+        self.asr.set_input_device(device_index)
+        self.status_bar.showMessage(f"🎤 录音设备：{self.mic_combo.currentText()}")
+
+    def _copy_all_text(self):
+        """复制病历全文到剪贴板"""
+        text = self.text_edit.toPlainText()
+        if not text.strip():
+            self.status_bar.showMessage("没有内容可复制")
+            return
+        QApplication.clipboard().setText(text)
+        self.status_bar.showMessage("📋 已复制全文到剪贴板")
+
+    def _update_record_duration(self):
+        """状态栏实时显示录音时长"""
+        if self._record_start_ts is None:
+            return
+        elapsed = int(time.time() - self._record_start_ts)
+        mm, ss = divmod(elapsed, 60)
+        self.status_bar.showMessage(f"🔴 录音中... {mm:02d}:{ss:02d}")
+
+    def _handle_voice_command(self, text):
+        """拦截语音命令。命中则执行对应动作并返回 True（不再作为病历文本填充）"""
+        command, arg = self.voice_command.parse(text)
+        if command is None:
+            return False
+        if command == "clear":
+            self._clear_text()
+            self.status_bar.showMessage("🗣 语音命令：已清除内容")
+        elif command == "export":
+            self._save_text()
+        elif command == "correct":
+            self._run_correction()
+            self.status_bar.showMessage("🗣 语音命令：开始纠错")
+        elif command == "save":
+            self._save_record()
+        elif command == "copy":
+            self._copy_all_text()
+        elif command == "open_library":
+            self._open_record_manager()
+        elif command == "stop_record":
+            if self.is_listening:
+                self._stop_recording()
+        elif command == "start_record":
+            if not self.is_listening:
+                self._start_recording()
+        elif command == "switch_template":
+            self._voice_switch_template(arg)
+        elif command == "switch_dept":
+            self._voice_switch_dept(arg)
+        else:
+            return False
+        return True
+
+    def _voice_switch_template(self, name):
+        """按语音命令切换模板（模糊匹配下拉框选项）"""
+        for i in range(self.template_combo.count()):
+            item = self.template_combo.itemText(i)
+            if name in item or item in name:
+                self.template_combo.setCurrentIndex(i)
+                self.status_bar.showMessage(f"🗣 语音命令：已切换模板→{item}")
+                return
+        self.status_bar.showMessage(f"🗣 未找到模板：{name}")
+
+    def _voice_switch_dept(self, name):
+        """按语音命令切换科室"""
+        for i in range(self.dept_combo.count()):
+            item = self.dept_combo.itemText(i)
+            if name in item or item in name:
+                self.dept_combo.setCurrentIndex(i)
+                self.status_bar.showMessage(f"🗣 语音命令：已切换科室→{item}")
+                return
+        self.status_bar.showMessage(f"🗣 未找到科室：{name}")
+
     def _on_recognized(self, text):
         """识别到文本，自动按病历格式结构化填充"""
         try:
@@ -1541,6 +1803,11 @@ class MedVoiceApp(QMainWindow):
             if not text:
                 self.partial_label.setText("⚠️ 未识别到文字，请重试")
                 self.status_bar.showMessage("识别完成，但未获取到文字内容")
+                return
+
+            # 优先拦截语音命令（如“清除内容”“换模板XX”）
+            if self._handle_voice_command(text):
+                self.partial_label.setText("✓ 已执行语音命令")
                 return
 
             # 如果选了模板，用增量填充（只填空字段，不覆盖已有内容）
@@ -1925,6 +2192,237 @@ class MedVoiceApp(QMainWindow):
         dialog.exec_()
         # 刷新后重新加载规则
         self.status_bar.showMessage("📏 规则已更新")
+
+    def _save_record(self):
+        """保存当前病历到数据库（新建或更新并记录版本）"""
+        if not self.db or not self.current_user:
+            QMessageBox.warning(self, "提示", "未登录，无法保存病历")
+            return
+        content = self.text_edit.toPlainText().strip()
+        if not content:
+            QMessageBox.information(self, "提示", "没有内容可保存")
+            return
+        # 从编辑器提取患者姓名（尽量）
+        patient_name = self._extract_patient_name(content)
+        dept = self.current_dept if self.current_dept != "通用" else self.current_user.get("department", "")
+        template_name = self.template_combo.currentText() if hasattr(self, "template_combo") else ""
+        if self.current_record_id is None:
+            self.current_record_id = self.db.create_record(
+                self.current_user["id"], patient_name, dept, template_name, content, "草稿"
+            )
+            self.status_bar.showMessage("💾 病历已保存到病历库（新建）")
+        else:
+            self.db.update_record(
+                self.current_record_id, patient_name=patient_name,
+                department=dept, template_name=template_name, content=content
+            )
+            self.status_bar.showMessage("💾 病历已更新（已记录版本）")
+
+    def _extract_patient_name(self, content):
+        """从病历文本中提取“姓名：XXX”字段，提不到返回空字符串"""
+        m = re.search(r'姓名[：:]\s*([^\s　\n]{1,10})', content)
+        return m.group(1).strip() if m else ""
+
+    def _open_record_manager(self):
+        """打开病历库，选中后回填到编辑器"""
+        if not self.db or not self.current_user:
+            QMessageBox.warning(self, "提示", "未登录，无法打开病历库")
+            return
+        dialog = RecordManagerDialog(self.db, self.current_user, self)
+        if dialog.exec_() == QDialog.Accepted and dialog.selected_record:
+            rec = dialog.selected_record
+            self.text_edit.setPlainText(rec["content"])
+            self.current_record_id = rec["id"]
+            self.status_bar.showMessage(
+                "📚 已打开病历：%s（%s）" % (rec["patient_name"] or "未命名", rec["updated_at"])
+            )
+
+    def _open_user_manager(self):
+        """打开用户管理（仅管理员）"""
+        if self.current_user.get("role") != "admin":
+            QMessageBox.warning(self, "权限不足", "仅管理员可管理用户")
+            return
+        dialog = UserManagerDialog(self.db, self)
+        dialog.exec_()
+
+    # ==================== AI 辅助诊断 ====================
+    def _run_diagnosis(self):
+        """启动后台线程分析当前病历"""
+        text = self.text_edit.toPlainText().strip()
+        if not text:
+            QMessageBox.information(self, "提示", "请先输入或录制病历内容")
+            return
+        if self.diagnosis_thread is not None and self.diagnosis_thread.isRunning():
+            return
+        self.ai_analyze_btn.setEnabled(False)
+        self.ai_status_label.setText("分析中...")
+        self.diagnosis_thread = DiagnosisThread(self.diagnosis_assistant, text)
+        self.diagnosis_thread.analysis_done.connect(self._on_diagnosis_done)
+        self.diagnosis_thread.start()
+
+    def _on_diagnosis_done(self, result):
+        """接收分析结果并分组展示"""
+        self.ai_analyze_btn.setEnabled(True)
+        self.ai_status_label.setText("")
+        if result.get("error"):
+            self.ai_result.setHtml(
+                f'<div style="color:#ff6b6b;">分析失败：{result["error"]}</div>'
+            )
+            return
+        self.ai_result.setHtml(self._render_diagnosis_html(result))
+        self.status_bar.showMessage("🔬 AI 分析完成")
+
+    def _render_diagnosis_html(self, result):
+        """将分析结果渲染为 HTML"""
+        def section(title, color="#00d4ff"):
+            return (f'<div style="color:{color};font-weight:bold;'
+                    f'margin:10px 0 4px 0;">{title}</div>')
+
+        html = []
+
+        # 风险预警（置顶、红色高亮）
+        alerts = result.get("risk_alerts", [])
+        if alerts:
+            html.append(section("⚠️ 风险预警", "#ff6b6b"))
+            html.append('<div style="background:rgba(255,107,107,0.12);'
+                        'border:1px solid rgba(255,107,107,0.4);'
+                        'border-radius:6px;padding:6px 10px;color:#ff9b9b;">')
+            for a in alerts:
+                if isinstance(a, (tuple, list)):
+                    label, msg = (a[0], a[1]) if len(a) >= 2 else ("", a[0])
+                    html.append(f'▸ <b>{label}</b>：{msg}<br>')
+                else:
+                    html.append(f'▸ {a}<br>')
+            html.append('</div>')
+
+        # 可能诊断
+        diagnoses = result.get("diagnoses", [])
+        if diagnoses:
+            html.append(section("🧭 可能诊断"))
+            html.append('<div style="color:#e0e0e0;">')
+            for d in diagnoses:
+                if isinstance(d, dict):
+                    name = d.get("disease", d.get("name", ""))
+                    score = d.get("score")
+                    matched = d.get("matched")
+                    line = f'• <b>{name}</b>'
+                    if score is not None:
+                        line += f' <span style="color:#6b8a9a;">(评分 {score})</span>'
+                    if matched:
+                        line += f' <span style="color:#6b8a9a;">→ {"、".join(matched)}</span>'
+                    html.append(line + '<br>')
+                else:
+                    html.append(f'• {d}<br>')
+            html.append('</div>')
+
+        # 中医辨证
+        tcm = result.get("tcm_analysis")
+        if tcm:
+            html.append(section("🌿 中医辨证", "#4ecdc4"))
+            html.append('<div style="color:#e0e0e0;">')
+            # 中医诊断
+            tcm_dx = tcm.get("tcm_diagnoses", [])
+            if tcm_dx:
+                html.append(f'• 中医诊断：<b style="color:#4ecdc4;">'
+                            f'{"、".join(tcm_dx)}</b><br>')
+            # 证型
+            syndromes = tcm.get("syndromes", [])
+            if syndromes:
+                for s in syndromes:
+                    if isinstance(s, dict):
+                        name = s.get("syndrome", "")
+                        score = s.get("score", "")
+                        matched = s.get("matched", [])
+                        line = f'• 证型：<b style="color:#4ecdc4;">{name}</b>'
+                        if score:
+                            line += f' <span style="color:#6b8a9a;">(评分 {score})</span>'
+                        if matched:
+                            line += f' <span style="color:#6b8a9a;">→ {"、".join(matched)}</span>'
+                        html.append(line + '<br>')
+            # 治法方药
+            treatment = tcm.get("treatment")
+            if treatment:
+                method = treatment.get("治法", "")
+                formula = treatment.get("代表方", "")
+                herbs = treatment.get("组成", [])
+                html.append(f'• 治法：{method}<br>')
+                if formula:
+                    html.append(f'• 代表方：<b>{formula}</b><br>')
+                if herbs:
+                    html.append(f'<span style="color:#6b8a9a;"> 组成：{"、".join(herbs)}</span><br>')
+            # 类证鉴别
+            differential = tcm.get("differential", [])
+            if differential:
+                html.append('<div style="margin-top:4px;color:#ffa94d;">类证鉴别：</div>')
+                for d in differential:
+                    if isinstance(d, dict):
+                        syn = d.get("syndrome", "")
+                        kp = d.get("key_points", "")
+                        tf = d.get("治法", "")
+                        rx = d.get("代表方", "")
+                        html.append(f'  • {syn}：{kp}')
+                        if tf:
+                            html.append(f' → {tf}')
+                        if rx:
+                            html.append(f'（{rx}）')
+                        html.append('<br>')
+            html.append('</div>')
+
+        # 用药审查
+        review = result.get("drug_review") or {}
+        if review:
+            matched = review.get("matched", [])
+            mismatched = review.get("mismatched", [])
+            recommended = review.get("recommended", [])
+            if matched or mismatched or recommended:
+                html.append(section("💊 用药审查"))
+                html.append('<div style="color:#e0e0e0;">')
+                for m in matched:
+                    if isinstance(m, dict):
+                        drug = m.get("drug", "")
+                        forl = m.get("for", [])
+                        suffix = f'（适用：{"、".join(forl)}）' if forl else ""
+                        html.append(f'✅ {drug}{suffix}<br>')
+                    else:
+                        html.append(f'✅ {m}<br>')
+                for m in mismatched:
+                    if isinstance(m, dict):
+                        drug = m.get("drug", "")
+                        note = m.get("note", "与当前诊断不匹配")
+                        html.append(f'<span style="color:#ffa94d;">'
+                                    f'⚠️ {drug}：{note}</span><br>')
+                    else:
+                        html.append(f'<span style="color:#ffa94d;">⚠️ {m}</span><br>')
+                if recommended:
+                    html.append('<span style="color:#6b8a9a;">建议补充用药：'
+                                + "、".join(recommended) + '</span><br>')
+                html.append('</div>')
+
+        # 检查建议
+        exams = result.get("exam_suggestions", [])
+        if exams:
+            html.append(section("🔍 检查建议"))
+            html.append('<div style="color:#e0e0e0;">')
+            for e in exams:
+                if isinstance(e, dict):
+                    name = e.get("exam", "")
+                    recorded = e.get("recorded")
+                    tag = '已记录' if recorded else '<span style="color:#ffa94d;">建议补充</span>'
+                    html.append(f'• {name}（{tag}）<br>')
+                else:
+                    html.append(f'• {e}<br>')
+            html.append('</div>')
+
+        # 免责声明
+        disclaimer = result.get("disclaimer", "")
+        if disclaimer:
+            html.append(f'<div style="color:#6b8a9a;font-size:11px;'
+                        f'margin-top:12px;border-top:1px solid rgba(255,255,255,0.1);'
+                        f'padding-top:6px;">{disclaimer}</div>')
+
+        if not html:
+            return '<div style="color:#6b8a9a;">未提取到可分析的临床信息。</div>'
+        return "".join(html)
 
     def _open_struct_view(self):
         """打开结构化解析视图"""
@@ -2396,7 +2894,24 @@ def main():
     font = QFont("Microsoft YaHei", 11)
     app.setFont(font)
 
-    window = MedVoiceApp()
+    # ─── 授权检查 ───
+    license_mgr = LicenseManager()
+    status = license_mgr.check_license()
+
+    if status["status"] in ("expired", "tampered"):
+        # 试用到期或篡改：必须输入激活码才能继续
+        dlg = ActivationDialog(license_mgr, status)
+        if dlg.exec_() != QDialog.Accepted:
+            sys.exit(0)
+    # "trial" 或 "activated" → 直接进入
+
+    # 登录（首次运行自动创建管理员）
+    db = Database()
+    login = LoginDialog(db)
+    if login.exec_() != QDialog.Accepted or not login.current_user:
+        sys.exit(0)
+
+    window = MedVoiceApp(db=db, current_user=login.current_user)
     window.show()
 
     sys.exit(app.exec_())

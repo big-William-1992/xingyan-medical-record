@@ -14,18 +14,49 @@ class TemplateEngine:
         self.load_templates()
 
     def load_templates(self):
-        """加载所有模板"""
+        """加载所有模板。
+        支持两种文件命名：
+          - `科室.json`：主科室模板
+          - `科室-变体.json`（如 `内科-中医.json`）：作为子科室，其模板合并到主科室下，
+            并在模板名前自动加前缀（如 `【中医】入院记录`）以便 UI 下拉区分。
+        """
         if not os.path.exists(self.templates_dir):
             os.makedirs(self.templates_dir)
             self._create_default_templates()
             return
 
+        # 先收集所有文件，按主科室名分组
+        grouped = {}  # 主科室名 -> [(variant_label, data), ...]
         for filename in os.listdir(self.templates_dir):
-            if filename.endswith('.json'):
-                path = os.path.join(self.templates_dir, filename)
-                with open(path, 'r', encoding='utf-8') as f:
-                    dept = filename.replace('.json', '')
-                    self.templates[dept] = json.load(f)
+            if not filename.endswith('.json'):
+                continue
+            path = os.path.join(self.templates_dir, filename)
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            base = filename.replace('.json', '')
+            if '-' in base:
+                main_dept, variant = base.split('-', 1)
+                label = variant  # 如 "中医"
+                grouped.setdefault(main_dept, []).append((label, data))
+            else:
+                grouped.setdefault(base, []).append((None, data))
+
+        # 合并：主科室 + 子科室模板
+        for main_dept, items in grouped.items():
+            merged_templates = []
+            for label, data in items:
+                tpls = data.get("templates", [])
+                if label is None:
+                    merged_templates.extend(tpls)
+                else:
+                    # 子科室模板名前加【标签】前缀
+                    for t in tpls:
+                        name = t.get("name", "")
+                        # 避免重复加前缀
+                        if not name.startswith(f"【{label}】"):
+                            name = f"【{label}】{name}"
+                        merged_templates.append({"name": name, "content": t.get("content", "")})
+            self.templates[main_dept] = {"templates": merged_templates}
 
     def _create_default_templates(self):
         """创建默认模板（贴近真实医院病历格式）"""

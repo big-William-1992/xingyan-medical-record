@@ -34,5 +34,12 @@ logs/
 # 运行时生成的热词文件
 .hotwords_current.txt
 
+# 授权文件（机器绑定，本地私有）
+星衍病历智能录入系统/license.dat
+
+# 数据库（用户/病历数据，本地私有）
+星衍病历智能录入系统/data/
+星衍病历智能录入系统/records.db
+
 # 系统文件
 Thumbs.db
