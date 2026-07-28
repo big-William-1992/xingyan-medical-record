@@ -71,6 +71,56 @@ modelscope download --model iic/punc_ct-transformer_cn-en-common-vocab471067-lar
 
 模型默认缓存在 `~/.cache/modelscope/models/` 目录下。
 
+#### 离线整包部署（GitHub Releases）
+
+适用场景：目标电脑无法联网，或希望免去首次运行时的在线下载等待。做法是把已下载好的模型缓存打包成压缩包，上传到本仓库的 GitHub Releases 作为附件，新电脑直接下载解压即可。
+
+**A. 打包（在一台已成功运行、模型已下载完成的电脑上操作）**
+
+模型缓存位置：
+- Windows：`C:\Users\<你的用户名>\.cache\modelscope\models\`
+- macOS/Linux：`~/.cache/modelscope/models/`
+
+> GitHub 单个 Release 附件上限为 2GB，三个模型合计约 2GB，**建议按模型分别打包**成 3 个压缩包，避免超限。
+
+Windows（PowerShell）：
+```powershell
+cd $env:USERPROFILE\.cache\modelscope\models
+Compress-Archive -Path iic\speech_seaco_paraformer* -DestinationPath asr-paraformer.zip
+Compress-Archive -Path iic\speech_fsmn_vad*        -DestinationPath asr-vad.zip
+Compress-Archive -Path iic\punc_ct-transformer*    -DestinationPath asr-punc.zip
+```
+
+macOS/Linux：
+```bash
+cd ~/.cache/modelscope/models
+zip -r asr-paraformer.zip iic/speech_seaco_paraformer*
+zip -r asr-vad.zip        iic/speech_fsmn_vad*
+zip -r asr-punc.zip       iic/punc_ct-transformer*
+```
+
+**B. 上传到 GitHub Releases**
+
+网页方式：仓库首页右侧 **Releases → Draft a new release** → 填 Tag（如 `models-v1`）和标题 → 把 3 个 zip 拖入 *Attach binaries* 区域 → 等上传完成后 **Publish release**。
+
+命令行方式（需先安装 gh CLI 并 `gh auth login`）：
+```bash
+gh release create models-v1 asr-paraformer.zip asr-vad.zip asr-punc.zip \
+  --repo big-William-1992/xingyan-medical-record \
+  --title "离线语音模型包 v1" \
+  --notes "FunASR 离线模型：Paraformer 主模型 + FSMN-VAD + CT-Punc"
+```
+
+**C. 在新电脑上部署**
+
+1. 从本仓库 Releases 页面下载 3 个 zip；
+2. 解压到模型缓存目录（不存在则新建），解压后应形成 `...\models\iic\speech_seaco_paraformer.../` 这样的结构：
+   - Windows：`C:\Users\<用户名>\.cache\modelscope\models\`
+   - macOS/Linux：`~/.cache/modelscope/models/`
+3. 启动软件，检测到本地已有模型即不再联网下载。
+
+> **提示**：模型属于大文件，请勿用 `git add` 提交进仓库（GitHub 单文件上限 100MB）；离线分发一律走 Releases 附件或 Git LFS。
+
 > **注意**：项目中的 `model/` 目录为旧版 Vosk 模型（已弃用），当前版本不再使用。
 
 ### 第四步：运行
