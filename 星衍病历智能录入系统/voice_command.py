@@ -25,10 +25,10 @@ class VoiceCommandParser:
         "open_library": ["打开病历库", "查看病历库", "病历库"],
     }
 
-    # "换模板XX" / "切换模板XX" / "使用XX模板"
+    # "换模板XX" / "切换模板XX" / "使用XX模板" / "切换到XX模板"
     SWITCH_TEMPLATE_RE = [
-        re.compile(r'^(?:换|切换|使用|选择)\s*模板\s*(.+)$'),
-        re.compile(r'^(?:换|切换|使用|选择)\s*(.+?)\s*模板$'),
+        re.compile(r'^(?:换|切换|使用|选择)\s*模板\s*(?:到|为)?\s*(.+)$'),
+        re.compile(r'^(?:换|切换|使用|选择)\s*(?:到|为)?\s*(.+?)\s*模板$'),
         re.compile(r'^模板\s*(?:切换|换)\s*(?:到|为)?\s*(.+)$'),
     ]
 
