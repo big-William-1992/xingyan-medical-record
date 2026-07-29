@@ -414,7 +414,8 @@ class ASREngine:
             print("[ASR] 没有录音数据")
             return ""
 
-        tmp_path = tempfile.mktemp(suffix=".wav")
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+        os.close(tmp_fd)
         try:
             audio_data = np.concatenate(self._recorded_frames, axis=0)
             if audio_data.ndim == 2 and audio_data.shape[1] == 1:

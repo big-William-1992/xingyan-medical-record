@@ -369,12 +369,21 @@ class Corrector:
 
         return result, log
 
+    # 不应被纠错的合法医学短语（避免 NLP 相似度误伤）
+    PROTECTED_PHRASES = {
+        "未见异常", "未见明显异常", "未见占位", "未见占位性病变",
+        "未见明显占位", "未见确切异常", "大致正常", "未见明确异常",
+        "血压控制可", "血糖控制可", "控制可", "控制尚可",
+        "病情稳定", "一般情况可", "精神可", "食欲可", "睡眠可",
+    }
+
     def _layer2_nlp_correct(self, text):
         """
         Layer 2: NLP 相似度匹配 + 实体归一化
         - SequenceMatcher 计算字符串相似度
         - 拼音近似匹配
         - 实体类型一致性检查
+        性能优化：按长度预筛 + 首字索引，避免全量遍历 14K+ 实体
         """
         log = []
         result = text
@@ -383,14 +392,34 @@ class Corrector:
         # 提取中文词段
         segments = re.findall(r'[一-鿿]{2,}', result)
 
+        # 构建实体长度索引（加速候选筛选）
+        if not hasattr(self, '_kg_by_len'):
+            self._kg_by_len = {}  # length → [entity_names]
+            for name in self.kg.entities:
+                self._kg_by_len.setdefault(len(name), []).append(name)
+
         for seg in segments:
             if seg in self.kg.entities or seg in self.active_words:
                 continue
+            # 跳过受保护的合法短语
+            if seg in self.PROTECTED_PHRASES:
+                continue
 
-            # 方法1: 与知识图谱实体做相似度匹配
+            seg_len = len(seg)
+            # 方法1: 与知识图谱实体做相似度匹配（仅比较长度 ±2 的候选）
             best_match = None
             best_score = 0
-            for entity_name in self.kg.entities:
+            candidates = []
+            for delta in range(-2, 3):
+                candidates.extend(self._kg_by_len.get(seg_len + delta, []))
+            # 进一步筛选：至少共享一个字符（大幅减少 SequenceMatcher 调用）
+            seg_chars = set(seg)
+            candidates = [e for e in candidates if seg_chars & set(e)]
+            # 限制候选数（避免极端情况）
+            if len(candidates) > 200:
+                candidates = candidates[:200]
+
+            for entity_name in candidates:
                 score = SequenceMatcher(None, seg, entity_name).ratio()
                 if score > best_score and score >= 0.6:
                     best_score = score
