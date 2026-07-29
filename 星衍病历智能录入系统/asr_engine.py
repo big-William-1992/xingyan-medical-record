@@ -26,6 +26,7 @@ except ImportError:
     HAS_POSTPROCESS = False
 
 from corrector import post_process_medical
+from medical_lm import MedicalLM
 
 
 class ASREngine:
@@ -53,9 +54,11 @@ class ASREngine:
         self._hotword_sections = {}  # {section_name: [words]}
         self._hotword_file = ""  # 当前科室热词临时文件路径
         self._postprocess_matcher = None  # 文本级纠错 matcher
+        self._lm = None  # 医学语言模型（3-gram 重打分）
         self._load_hotwords()
         self._load_user_hotwords()
         self._build_postprocess_matcher()
+        self._load_language_model()
 
         # 加载 Paraformer + VAD + 标点模型
         self._load_model()
@@ -193,6 +196,19 @@ class ASREngine:
         except Exception as e:
             print(f"[ASR] 构建纠错 matcher 失败: {e}")
             self._postprocess_matcher = None
+
+    def _load_language_model(self):
+        """加载医学 3-gram 语言模型（用于识别后重打分纠错）"""
+        try:
+            self._lm = MedicalLM()
+            if self._lm.is_ready:
+                print("[ASR] 医学语言模型已启用（3-gram 重打分）")
+            else:
+                self._lm = None
+                print("[ASR] 语言模型未就绪，跳过重打分")
+        except Exception as e:
+            self._lm = None
+            print(f"[ASR] 语言模型加载失败: {e}")
 
     # ─── 模型加载 ─────────────────────────────────────────
 
@@ -355,6 +371,11 @@ class ASREngine:
                         print(f"[ASR] 文本纠错: {before} => {text}")
 
                 text = post_process_medical(text)
+
+                # 语言模型重打分：纠正低概率区域（误识别）
+                if self._lm and self._lm.is_ready:
+                    text = self._lm.rescore(text)
+
                 print(f"[ASR] 识别结果({len(texts)}段): {text[:120]}")
                 return text
             else:

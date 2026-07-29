@@ -13,6 +13,7 @@
     药物 / 用药 / 吃什么药 → 常用药物（附说明书）
     说明书 / 用法 / 禁忌 → 药物说明书
     中医 / 辨证 / 证型 → 中医证型与治法
+    饮食 / 忌口 / 吃什么 → 饮食宜忌（宜吃/忌吃/食谱）
     鉴别 / 区分 → 鉴别要点（症状组合）
     概述 / 是什么 / 介绍 → 疾病概述
 未指明意图时，返回综合概览。
@@ -32,6 +33,7 @@ INTENT_KEYWORDS = [
     ("治疗", ["治疗", "方案", "怎么办", "如何治", "怎样治", "怎么治", "处理", "疗法"]),
     ("用药", ["用药", "吃什么药", "用什么药", "开什么药", "药物", "处方", "服药"]),
     ("说明书", ["说明书", "用法用量", "禁忌", "不良反应", "副作用", "适应症"]),
+    ("饮食", ["饮食", "忌口", "吃什么", "不能吃什么", "宜吃", "忌吃", "食物", "食疗", "膳食"]),
     ("检查", ["检查", "化验", "做什么检查", "辅助检查", "检测", "筛查"]),
     ("症状", ["症状", "表现", "临床表现", "什么症状", "征兆", "迹象"]),
     ("中医", ["中医", "辨证", "证型", "方剂", "中药", "治法"]),
@@ -146,6 +148,7 @@ class KnowledgeQA:
             "检查": self._answer_exams,
             "症状": self._answer_symptoms,
             "中医": self._answer_tcm,
+            "饮食": self._answer_diet,
             "鉴别": self._answer_differential,
             "概述": self._answer_overview,
         }.get(intent, self._answer_overview_all)
@@ -248,6 +251,23 @@ class KnowledgeQA:
         return {"found": True, "disease": disease, "intent": intent,
                 "text": "\n".join(lines), "suggestions": self._related(disease)}
 
+    def _answer_diet(self, disease, intent="饮食"):
+        """饮食宜忌回答"""
+        diet = self.kg.get_diet_for_disease(disease)
+        lines = ["🍽️ 【%s】饮食宜忌" % disease, ""]
+        if diet:
+            if diet.get("宜吃"):
+                lines.append("✅ 宜吃：%s" % "、".join(diet["宜吃"]))
+            if diet.get("忌吃"):
+                lines.append("❌ 忌吃：%s" % "、".join(diet["忌吃"]))
+            if diet.get("推荐食谱"):
+                lines.append("📋 推荐食谱：%s" % "、".join(diet["推荐食谱"]))
+        else:
+            lines.append("（知识库暂无该病的饮食宜忌数据，可导入 DiseaseKG 补充）")
+        lines.extend(["", "⚕ " + DISCLAIMER])
+        return {"found": True, "disease": disease, "intent": intent,
+                "text": "\n".join(lines), "suggestions": self._related(disease)}
+
     def _answer_comparison(self, diseases):
         """多疾病对比回答：并列列出各病的症状/检查/用药供鉴别"""
         lines = ["🔍 【%s】鉴别对比" % " vs ".join(diseases), ""]
@@ -300,10 +320,17 @@ class KnowledgeQA:
             lines.append("▪ 常用药物：%s" % "、".join(drugs[:8]))
         if info.get("治疗方式"):
             lines.append("▪ 治疗方式：%s" % "、".join(info["治疗方式"]))
+        # 饮食宜忌
+        diet = self.kg.get_diet_for_disease(disease)
+        if diet:
+            if diet.get("宜吃"):
+                lines.append("✅ 宜吃：%s" % "、".join(diet["宜吃"][:6]))
+            if diet.get("忌吃"):
+                lines.append("❌ 忌吃：%s" % "、".join(diet["忌吃"][:6]))
         cv = self.kg.get_critical_value(disease)
         if cv:
             lines.append("⚠ 危急值：%s" % cv)
-        lines.extend(["", "💡 可追问：治疗方案 / 用药 / 检查 / 症状 / 中医辨证"])
+        lines.extend(["", "💡 可追问：治疗方案 / 用药 / 检查 / 症状 / 中医辨证 / 饮食宜忌"])
         lines.append("⚕ " + DISCLAIMER)
         return {"found": True, "disease": disease, "intent": intent,
                 "text": "\n".join(lines), "suggestions": self._related(disease)}
@@ -339,7 +366,8 @@ class KnowledgeQA:
     def _related(self, disease):
         """返回与该病相关的快捷追问建议"""
         return ["%s的治疗方案" % disease, "%s用什么药" % disease,
-                "%s要做哪些检查" % disease, "%s的中医辨证" % disease]
+                "%s要做哪些检查" % disease, "%s的中医辨证" % disease,
+                "%s的饮食宜忌" % disease]
 
 
 if __name__ == "__main__":

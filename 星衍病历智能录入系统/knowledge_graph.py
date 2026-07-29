@@ -726,6 +726,15 @@ class MedicalKnowledgeGraph:
             if insert:
                 self.drug_inserts[name] = insert
             count += 1
+        # 食物实体（DiseaseKG 饮食宜忌）
+        for name, info in (data.get("foods") or {}).items():
+            info = dict(info or {})
+            info.setdefault("type", "食物")
+            self._merge_entity(name, info)
+            for disease in info.get("关联疾病", []):
+                self._add_relation(name, "FOOD_FOR", disease)
+                self._add_relation(disease, "RECOMMEND_FOOD", name)
+            count += 1
         return count
 
     def normalize(self, name):
@@ -738,7 +747,7 @@ class MedicalKnowledgeGraph:
 
     def recommend_treatment(self, disease):
         """
-        综合治疗方案推荐：整合西医药物 + 检查 + 中医证型，
+        综合治疗方案推荐：整合西医药物 + 检查 + 中医证型 + 饮食宜忌，
         并附带药物说明书（若有）。返回结构化 dict。
         """
         disease = self.normalize(disease)
@@ -753,8 +762,38 @@ class MedicalKnowledgeGraph:
             "药物说明书": {d: self.drug_inserts[d] for d in drugs
                           if d in self.drug_inserts},
             "中医证型": self.get_syndromes_for_disease(disease),
+            "饮食宜忌": self.get_diet_for_disease(disease),
         }
         return result
+
+    def get_diet_for_disease(self, disease):
+        """返回疾病的饮食宜忌（宜吃/忌吃/推荐食谱）"""
+        disease = self.normalize(disease)
+        info = self.entities.get(disease, {})
+        diet = {}
+        if info.get("宜吃食物"):
+            diet["宜吃"] = info["宜吃食物"]
+        if info.get("忌吃食物"):
+            diet["忌吃"] = info["忌吃食物"]
+        if info.get("推荐食谱"):
+            diet["推荐食谱"] = info["推荐食谱"]
+        return diet if diet else None
+
+    def get_herb_info(self, herb_name):
+        """返回中药材信息（性味/归经/功效/主治）"""
+        herb_name = self.normalize(herb_name)
+        info = self.entities.get(herb_name, {})
+        if info.get("type") in ("中药材", "中药", "药物"):
+            return info
+        return None
+
+    def get_formula_info(self, formula_name):
+        """返回方剂信息（组成/功效/主治）"""
+        formula_name = self.normalize(formula_name)
+        info = self.entities.get(formula_name, {})
+        if info.get("type") == "方剂":
+            return info
+        return None
 
     def get_entity_type(self, name):
         """获取实体类型"""
