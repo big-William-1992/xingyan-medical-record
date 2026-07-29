@@ -15,6 +15,9 @@ env/
 # ASR 模型文件（约2GB，需单独下载）
 星衍病历智能录入系统/model/
 
+# 知识图谱原始数据（下载产物，体积大；转换后的 kg_data/*.json 才入 git）
+星衍病历智能录入系统/medical.json
+
 # 日志
 logs/
 *.log

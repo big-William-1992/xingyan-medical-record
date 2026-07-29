@@ -18,13 +18,21 @@ class MedicalKnowledgeGraph:
     用于语义级纠错和上下文验证
     """
 
-    def __init__(self):
+    def __init__(self, external_dir=None):
         # 知识图谱数据
         self.entities = {}       # 实体名称 → 实体信息
         self.relations = []      # (实体A, 关系, 实体B)
         self.entity_types = {}   # 实体名称 → 类型
         self._sim_cache = {}     # 语义相似度缓存
+        self._rel_set = set()    # 关系去重集合
+        self.drug_inserts = {}   # 药物名 → 说明书信息
+        self.aliases = {}        # 别名 → 标准实体名
+        # 外部知识（OpenKG/CMeKG 等）导入目录，默认 ./kg_data
+        self.external_dir = external_dir or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "kg_data")
         self._build_graph()
+        # 内置图谱构建后，尝试合并外部知识（无数据时静默跳过）
+        self._load_external_kg()
 
     def _build_graph(self):
         """构建知识图谱"""
@@ -614,6 +622,140 @@ class MedicalKnowledgeGraph:
             for herb in info.get("组成", []):
                 self.relations.append((rx, "CONTAINS", herb))
 
+        # 记录内置关系用于后续去重
+        self._rel_set = set(self.relations)
+
+    # ─── 外部知识导入（OpenKG / CMeKG 等）─────────────────
+
+    def _add_relation(self, subj, rel, obj):
+        """追加关系并去重（内置 + 外部统一入口）"""
+        if not subj or not obj:
+            return
+        triple = (subj, rel, obj)
+        if triple in self._rel_set:
+            return
+        self._rel_set.add(triple)
+        self.relations.append(triple)
+
+    def _merge_entity(self, name, info):
+        """合并一个实体到图谱：新增则登记，已存在则并入列表字段"""
+        etype = info.get("type")
+        if name not in self.entities:
+            self.entities[name] = dict(info)
+            if etype:
+                self.entity_types[name] = etype
+            return
+        # 已存在：合并列表型字段（症状/检查/药物等），标量字段保留原值
+        existing = self.entities[name]
+        for key, val in info.items():
+            if isinstance(val, list):
+                merged = existing.get(key, [])
+                for item in val:
+                    if item not in merged:
+                        merged.append(item)
+                existing[key] = merged
+            elif key not in existing or not existing.get(key):
+                existing[key] = val
+
+    def _load_external_kg(self):
+        """
+        从 self.external_dir 加载 *.json 外部医学知识并合并进图谱。
+        统一 schema（详见 kg_data/README）：
+            {
+              "source": "OpenKG-CMeKG",
+              "diseases": {"疾病名": {"系统":..., "常见症状":[...],
+                            "常见检查":[...], "常用药物":[...], "别名":[...]}},
+              "drugs":    {"药物名": {"类别":..., "关联疾病":[...],
+                            "说明书": {"适应症":..., "用法用量":..., "禁忌":..., "不良反应":...}}}
+            }
+        无目录 / 无文件 / 单文件损坏都不会影响内置图谱可用性。
+        返回本次导入的实体数量。
+        """
+        loaded = 0
+        if not os.path.isdir(self.external_dir):
+            return loaded
+        try:
+            files = sorted(f for f in os.listdir(self.external_dir)
+                           if f.endswith(".json"))
+        except OSError:
+            return loaded
+        for fname in files:
+            fpath = os.path.join(self.external_dir, fname)
+            try:
+                with open(fpath, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except (OSError, ValueError):
+                # 单个文件损坏不影响其余，跳过
+                continue
+            loaded += self._merge_kg_payload(data)
+        return loaded
+
+    def _merge_kg_payload(self, data):
+        """合并一份已解析的 JSON 知识载荷，返回新增/更新实体数"""
+        if not isinstance(data, dict):
+            return 0
+        count = 0
+        for name, info in (data.get("diseases") or {}).items():
+            info = dict(info or {})
+            info.setdefault("type", "疾病")
+            self._merge_entity(name, info)
+            for alias in info.get("别名", []):
+                self.aliases[alias] = name
+            for symptom in info.get("常见症状", []):
+                self._add_relation(name, "HAS_SYMPTOM", symptom)
+                self._add_relation(symptom, "INDICATES", name)
+                self.entity_types.setdefault(symptom, "症状")
+            for exam in info.get("常见检查", []):
+                self._add_relation(name, "HAS_EXAM", exam)
+                self.entity_types.setdefault(exam, "检查")
+            for drug in info.get("常用药物", []):
+                self._add_relation(name, "TREATED_BY", drug)
+                self._add_relation(drug, "TREATS", name)
+                self.entity_types.setdefault(drug, "药物")
+            count += 1
+        for name, info in (data.get("drugs") or {}).items():
+            info = dict(info or {})
+            info.setdefault("type", "药物")
+            insert = info.pop("说明书", None)
+            self._merge_entity(name, info)
+            for alias in info.get("别名", []):
+                self.aliases[alias] = name
+            for disease in info.get("关联疾病", []):
+                self._add_relation(name, "TREATS", disease)
+                self._add_relation(disease, "TREATED_BY", name)
+            if insert:
+                self.drug_inserts[name] = insert
+            count += 1
+        return count
+
+    def normalize(self, name):
+        """把别名归一化到标准实体名（无别名时原样返回）"""
+        return self.aliases.get(name, name)
+
+    def get_drug_info(self, drug):
+        """返回药物说明书信息（适应症/用法用量/禁忌/不良反应），无则 None"""
+        return self.drug_inserts.get(self.normalize(drug))
+
+    def recommend_treatment(self, disease):
+        """
+        综合治疗方案推荐：整合西医药物 + 检查 + 中医证型，
+        并附带药物说明书（若有）。返回结构化 dict。
+        """
+        disease = self.normalize(disease)
+        drugs = self.get_drugs_for_disease(disease)
+        result = {
+            "disease": disease,
+            "exists": disease in self.entities,
+            "常用药物": drugs,
+            "常见检查": self.get_exams_for_disease(disease),
+            "常见症状": self.get_symptoms_for_disease(disease),
+            "危急值": self.get_critical_value(disease),
+            "药物说明书": {d: self.drug_inserts[d] for d in drugs
+                          if d in self.drug_inserts},
+            "中医证型": self.get_syndromes_for_disease(disease),
+        }
+        return result
+
     def get_entity_type(self, name):
         """获取实体类型"""
         return self.entity_types.get(name)
@@ -631,23 +773,29 @@ class MedicalKnowledgeGraph:
         return related
 
     def get_diseases_with_symptom(self, symptom):
-        """根据症状查找可能的疾病"""
+        """根据症状查找可能的疾病（保序去重）"""
         results = []
         for subj, rel, obj in self.relations:
+            disease = None
             if rel == "HAS_SYMPTOM" and obj == symptom:
-                results.append(subj)
+                disease = subj
             elif rel == "INDICATES" and subj == symptom:
-                results.append(obj)
+                disease = obj
+            if disease and disease not in results:
+                results.append(disease)
         return results
 
     def get_drugs_for_disease(self, disease):
-        """根据疾病查找常用药物"""
+        """根据疾病查找常用药物（保序去重）"""
         results = []
         for subj, rel, obj in self.relations:
+            drug = None
             if rel == "TREATED_BY" and subj == disease:
-                results.append(obj)
+                drug = obj
             elif rel == "TREATS" and obj == disease:
-                results.append(subj)
+                drug = subj
+            if drug and drug not in results:
+                results.append(drug)
         return results
 
     def get_exams_for_disease(self, disease):

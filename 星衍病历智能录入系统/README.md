@@ -157,7 +157,11 @@ python main.py
 ├── template_engine.py     ← 模板管理
 ├── corrector.py           ← 三级纠错引擎
 ├── rule_engine.py         ← 规则引擎
-├── knowledge_graph.py     ← 医学知识图谱
+├── knowledge_graph.py     ← 医学知识图谱（内置 + 外部 OpenKG 导入）
+├── convert_openkg.py      ← OpenKG/CMeKG 三元组 → 知识 JSON 转换器
+├── convert_drugbank.py    ← DrugBank XML → 药物说明书 JSON 转换器
+├── convert_medkg.py       ← QASystemOnMedicalKG medical.json → 知识 JSON 转换器
+├── kg_data/               ← 外部知识导入目录（放 *.json 即自动生效）
 ├── crash_logger.py        ← 崩溃日志
 ├── medical_dict.json      ← 医疗词库
 ├── hotwords.txt           ← ASR 热词（模型级）
@@ -248,6 +252,69 @@ python main.py
 
 在软件内点击"📝 模板管理"，选择科室后编辑模板内容保存即可。
 或手动编辑 `templates/科室名.json` 文件。
+
+### 接入外部医学知识图谱（OpenKG / CMeKG）
+
+系统内置了约 60 个常见疾病的知识图谱（疾病-症状-检查-药物），并支持导入外部开放知识以扩充治疗方案推荐。
+
+**数据来源**（[OpenKG.cn](http://openkg.cn/dataset) 免费开放，需注册下载）：
+
+| 数据集 | 规模 | 适用 |
+|--------|------|------|
+| 面向家庭常见疾病的知识图谱 | 常见病、症状、治疗手段、常用药物 | 格式最贴合，推荐首选 |
+| CMeKG 2.0 | 1万+ 疾病、2万+ 药物、156万三元组 | 规模最大 |
+| DiaKG | 糖尿病指南与共识 | 专科深度 |
+
+**接入三步**：
+
+```bash
+# 1. 从 OpenKG 下载三元组数据（CSV/TSV/JSON）
+# 2. 转换为统一知识 JSON（自动输出到 kg_data/）
+python convert_openkg.py cmekg_triples.csv --sep '\t'
+# 3. 重启程序即生效（knowledge_graph 启动时自动合并 kg_data/*.json）
+```
+
+也可直接手写 `kg_data/*.json`（schema 见 `kg_data/sample_openkg.json`），支持疾病的**别名归一化**和药物**说明书**（适应症/用法用量/禁忌/不良反应）。程序接口：
+
+```python
+from knowledge_graph import MedicalKnowledgeGraph
+kg = MedicalKnowledgeGraph()
+kg.recommend_treatment("2型糖尿病")   # 综合药物+检查+中医证型+说明书
+kg.get_drug_info("二甲双胍")           # 药物说明书
+kg.normalize("格华止")                 # 别名 → 标准名
+```
+
+> ⚠️ 知识图谱仅供医师参考辅助，不构成诊疗决策依据。
+
+### 推荐：QASystemOnMedicalKG（免费直接下载，4.4万疾病）
+
+CMeKG 全量数据需邮件申请、官网不稳定，无法直接下载。**最佳中文替代**是 [QASystemOnMedicalKG](https://github.com/liuhuanyong/QASystemOnMedicalKG) 的 `data/medical.json`（约 4.4 万种疾病，寻医问药网抽取，免费）：
+
+```bash
+# 1. 从 GitHub 下载 data/medical.json
+# 2. 转换（可过滤信息过少的疾病、限量）
+python convert_medkg.py medical.json -o kg_data/medkg.json --min-fields 1
+# 3. 重启即生效；kg_data/medkg.json 体积小，可直接提交进 git 随软件离线分发
+```
+
+转换后 `recommend_treatment()` 即可覆盖几万个疾病的症状/检查/用药推荐。
+
+### 接入 DrugBank 药物说明书
+
+DrugBank 提供国际权威的药物 monograph（适应症/剂量/毒性/作用机制）。
+
+> ⚠️ **两个前提**：① 完整库需在 [go.drugbank.com](https://go.drugbank.com) 申请免费学术许可后下载（单个约 1.4GB XML，不入 git）；② DrugBank 为英文，转换器内置常用药中英映射（ZH_MAP），可用 `--zh-map` 扩充。
+
+```bash
+# 默认只导出命中中文映射的药物（与病历中文药名对齐）
+python convert_drugbank.py "full database.xml" -o kg_data/drugbank.json
+# 保留未映射的英文药物 / 自定义映射
+python convert_drugbank.py db.xml --zh-map mymap.csv --keep-english
+```
+
+输出同样写入 `kg_data/`，重启后 `get_drug_info()` / `recommend_treatment()` 即可读到说明书。若同一药物在多个数据源都有说明书，后加载的文件覆盖先前的（文件名字母序）。
+
+> 中文医院如需国内合规说明书，建议以 NMPA（国家药监局）说明书为准，DrugBank 英文内容作为机制/毒性参考。
 
 ---
 

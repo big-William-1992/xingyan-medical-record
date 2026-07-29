@@ -33,6 +33,7 @@ from record_manager_dialog import RecordManagerDialog
 from voice_command import VoiceCommandParser
 from asr_engine import get_microphone_list
 from diagnosis_assistant import DiagnosisAssistant
+from knowledge_qa import KnowledgeQA
 from license_manager import LicenseManager
 from activation_dialog import ActivationDialog, TrialInfoBar
 from phrase_library import PhraseLibrary
@@ -722,6 +723,7 @@ class MedVoiceApp(QMainWindow):
 
         # AI 辅助诊断（基于知识图谱）
         self.diagnosis_assistant = DiagnosisAssistant()
+        self.qa_engine = KnowledgeQA()
         self.diagnosis_thread = None
 
         # 常用语句库
@@ -1251,9 +1253,23 @@ class MedVoiceApp(QMainWindow):
             QPushButton:hover { background: #00d4ff; }
             QPushButton:disabled { background: #333; color: #666; }
         """)
+        qa_btn = QPushButton("💡 知识问答")
+        qa_btn.clicked.connect(self._show_qa_dialog)
+        qa_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #ff9a5b, stop:1 #f64236);
+                color: #fff;
+                padding: 6px 16px;
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: #ffaf7b; }
+        """)
         self.ai_status_label = QLabel("")
         self.ai_status_label.setStyleSheet("color: #6b8a9a; font-size: 10px;")
         ai_header.addWidget(self.ai_analyze_btn)
+        ai_header.addWidget(qa_btn)
         ai_header.addWidget(self.ai_status_label)
         ai_header.addStretch()
         ai_layout.addLayout(ai_header)
@@ -2527,6 +2543,17 @@ class MedVoiceApp(QMainWindow):
             return
         self.ai_result.setHtml(self._render_diagnosis_html(result))
         self.status_bar.showMessage("🔬 AI 分析完成")
+
+    def _show_qa_dialog(self):
+        """打开知识问答对话框"""
+        try:
+            from qa_dialog import KnowledgeQADialog
+            dialog = KnowledgeQADialog(qa_engine=self.qa_engine, parent=self)
+            dialog.exec_()
+        except Exception as e:
+            import traceback
+            self.status_bar.showMessage(f"⚠ 问答启动失败：{e}")
+            traceback.print_exc()
 
     def _render_diagnosis_html(self, result):
         """将分析结果渲染为 HTML"""
