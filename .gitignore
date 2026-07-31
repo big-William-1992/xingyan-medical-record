@@ -38,6 +38,23 @@ logs/
 .hotwords_current.txt
 星衍病历智能录入系统/user_hotwords.txt
 
+# 纠错反馈 + 用户语料（运行时自动收集，本地私有）
+星衍病历智能录入系统/correction_feedback.jsonl
+星衍病历智能录入系统/user_corpus.txt
+星衍病历智能录入系统/.corpus_hashes.json
+星衍病历智能录入系统/rejection_rules.json
+星衍病历智能录入系统/medical_3gram.pkl.bak
+星衍病历智能录入系统/.guide_done
+
+# 录音文件（音文对照回放用，本地私有）
+星衍病历智能录入系统/recordings/
+
+# ASR 混淆对纠错表（从用户反馈自动生成）
+星衍病历智能录入系统/asr_confusion_pairs.json
+
+# 知识图谱原始下载文件（体积大，转换后的精简版才入 git）
+星衍病历智能录入系统/kg_data/xywy_medical.json
+
 # 常用语句库（用户可编辑，运行时自动生成默认）
 星衍病历智能录入系统/phrases.json
 

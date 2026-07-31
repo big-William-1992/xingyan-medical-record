@@ -38,6 +38,9 @@ from license_manager import LicenseManager
 from activation_dialog import ActivationDialog, TrialInfoBar
 from phrase_library import PhraseLibrary
 from phrase_dialog import PhraseDialog
+from correction_feedback import CorrectionFeedback
+from ux_components import Toast, RecordingIndicator, OnboardingGuide, FieldHighlighter
+from audio_widgets import WaveformWidget, AudioPlayerWidget
 
 
 # ==================== 语音识别线程 ====================
@@ -56,14 +59,20 @@ class ListenThread(QThread):
     def run(self):
         self.status_changed.emit("正在录音...")
         self._recording = True
-        self.asr.start_listening()
+
+        # 流式回调：每段识别结果通过 partial_text 信号实时推送到 UI
+        def _stream_partial(text):
+            if text and self._recording:
+                self.partial_text.emit(text)
+
+        self.asr.start_listening(on_partial=_stream_partial)
 
         # 等录音结束
         while self._recording and self.asr.is_listening:
             self.msleep(100)
 
         self.status_changed.emit("正在识别...")
-        # 停止录音并获取文本
+        # 停止录音并获取最终文本（全量精确识别，含 LM 重打分）
         text = self.asr.stop_listening()
         self.final_text = text
         self.text_ready.emit(text)
@@ -699,6 +708,9 @@ class FieldWordsPanel(QWidget):
 
 # ==================== 主窗口 ====================
 class MedVoiceApp(QMainWindow):
+    # 音频文件转写完成信号（text, filename）
+    file_transcribed = pyqtSignal(str, str)
+
     def __init__(self, db=None, current_user=None):
         super().__init__()
         self.db = db
@@ -729,6 +741,9 @@ class MedVoiceApp(QMainWindow):
         # 常用语句库
         self.phrase_lib = PhraseLibrary()
         self._phrase_dialog = None
+
+        # 纠错反馈收集（用于 LM 迭代训练）
+        self.feedback = CorrectionFeedback()
 
         # 崩溃日志
         self.crash_logger = CrashLogger()
@@ -765,6 +780,15 @@ class MedVoiceApp(QMainWindow):
 
         # 启动时：自动备份数据库 + 从历史病历预热用户热词
         self._startup_maintenance()
+
+        # 首次使用新手引导
+        self._guide = OnboardingGuide.show_if_needed(self)
+
+        # 音频文件转写完成信号
+        self.file_transcribed.connect(self._on_file_transcribed)
+
+        # 模板搜索过滤
+        self.template_combo.lineEdit().textEdited.connect(self._filter_templates)
 
     def _startup_maintenance(self):
         """启动维护：数据库自动备份 + 从历史病历提取高频词作为用户热词"""
@@ -864,10 +888,13 @@ class MedVoiceApp(QMainWindow):
 
         toolbar.addSeparator()
 
-        # 模板选择
+        # 模板选择（可编辑搜索）
         toolbar.addWidget(QLabel("  模板："))
         self.template_combo = QComboBox()
         self.template_combo.setMinimumWidth(160)
+        self.template_combo.setEditable(True)
+        self.template_combo.setInsertPolicy(QComboBox.NoInsert)
+        self.template_combo.lineEdit().setPlaceholderText("搜索模板...")
         self.template_combo.currentTextChanged.connect(self._on_template_changed)
         toolbar.addWidget(self.template_combo)
 
@@ -897,6 +924,10 @@ class MedVoiceApp(QMainWindow):
             }
         """)
         toolbar.addWidget(self.record_btn)
+
+        # 录音状态指示器（脉冲动画）
+        self.recording_indicator = RecordingIndicator()
+        toolbar.addWidget(self.recording_indicator)
 
         # 录音模式选择
         mode_label = QLabel("  模式：")
@@ -940,16 +971,13 @@ class MedVoiceApp(QMainWindow):
         copy_btn.clicked.connect(self._copy_all_text)
         toolbar.addWidget(copy_btn)
 
+        toolbar.addSeparator()
+
         # 常用语句库按钮（F3）
         phrase_btn = QPushButton("💬 常用语")
         phrase_btn.setToolTip("打开常用语句库，一键插入常用短语（F3）")
         phrase_btn.clicked.connect(self._open_phrase_library)
         toolbar.addWidget(phrase_btn)
-
-        # 模板管理按钮
-        tpl_btn = QPushButton("📝 模板管理")
-        tpl_btn.clicked.connect(self._open_template_manager)
-        toolbar.addWidget(tpl_btn)
 
         # 首页→病程 自动填充按钮
         autofill_btn = QPushButton("📋 首页→病程")
@@ -963,20 +991,26 @@ class MedVoiceApp(QMainWindow):
         apply_btn.clicked.connect(self._smart_apply_template)
         toolbar.addWidget(apply_btn)
 
-        # 规则管理按钮
-        rule_btn = QPushButton("📏 规则管理")
-        rule_btn.clicked.connect(self._open_rule_manager)
-        toolbar.addWidget(rule_btn)
-
-        # 结构化解析按钮
-        struct_btn = QPushButton("📋 结构化")
-        struct_btn.clicked.connect(self._open_struct_view)
-        toolbar.addWidget(struct_btn)
-
-        # 崩溃日志按钮
-        crash_btn = QPushButton("📋 崩溃日志")
-        crash_btn.clicked.connect(self._view_crash_log)
-        toolbar.addWidget(crash_btn)
+        # “更多”溢出菜单（低频功能收纳，减少工具栏拥挤）
+        more_btn = QToolButton()
+        more_btn.setText("更多 ⌄")
+        more_btn.setToolTip("模板管理 / 规则管理 / 结构化 / 崩溃日志")
+        more_btn.setPopupMode(QToolButton.InstantPopup)
+        more_menu = QMenu(more_btn)
+        more_menu.addAction("📝 模板管理", self._open_template_manager)
+        more_menu.addAction("📏 规则管理", self._open_rule_manager)
+        more_menu.addAction("📋 结构化解析", self._open_struct_view)
+        more_menu.addSeparator()
+        more_menu.addAction("📋 崩溃日志", self._view_crash_log)
+        more_btn.setMenu(more_menu)
+        more_btn.setStyleSheet("""
+            QToolButton {
+                padding: 6px 12px;
+                border-radius: 6px;
+            }
+            QToolButton:hover { background: rgba(0,212,255,0.1); }
+        """)
+        toolbar.addWidget(more_btn)
 
         toolbar.addSeparator()
 
@@ -1021,6 +1055,30 @@ class MedVoiceApp(QMainWindow):
         record_shortcut.triggered.connect(self._toggle_recording)
         self.addAction(record_shortcut)
 
+        # 录音快捷键 Ctrl+R（更直觉）
+        record_shortcut2 = QAction(self)
+        record_shortcut2.setShortcut("Ctrl+R")
+        record_shortcut2.triggered.connect(self._toggle_recording)
+        self.addAction(record_shortcut2)
+
+        # 导出快捷键 Ctrl+E
+        export_shortcut = QAction(self)
+        export_shortcut.setShortcut("Ctrl+E")
+        export_shortcut.triggered.connect(self._save_text)
+        self.addAction(export_shortcut)
+
+        # 专注模式快捷键 F11
+        focus_shortcut = QAction(self)
+        focus_shortcut.setShortcut("F11")
+        focus_shortcut.triggered.connect(self._toggle_focus_mode)
+        self.addAction(focus_shortcut)
+
+        # 纠错面板显隐快捷键 F9
+        panel_shortcut = QAction(self)
+        panel_shortcut.setShortcut("F9")
+        panel_shortcut.triggered.connect(self._toggle_left_panel)
+        self.addAction(panel_shortcut)
+
         # 常用语句库快捷键 F3
         phrase_shortcut = QAction(self)
         phrase_shortcut.setShortcut("F3")
@@ -1042,9 +1100,11 @@ class MedVoiceApp(QMainWindow):
 
         # 分割器
         splitter = QSplitter(Qt.Horizontal)
+        self.splitter = splitter
 
         # 左侧面板 - 纠错日志
         left_panel = QWidget()
+        self.left_panel = left_panel
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1136,6 +1196,21 @@ class MedVoiceApp(QMainWindow):
             QPushButton:disabled { color: #444; border-color: #333; }
         """)
 
+        accept_all_btn = QPushButton("✓✓ 全部接受")
+        accept_all_btn.clicked.connect(self._accept_all_corrections)
+        accept_all_btn.setToolTip("一键接受所有纠错建议")
+        accept_all_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(81, 207, 102, 0.1);
+                color: #51cf66;
+                padding: 5px 10px;
+                border-radius: 12px;
+                border: 1px solid rgba(81, 207, 102, 0.2);
+                font-size: 11px;
+            }
+            QPushButton:hover { background: rgba(81, 207, 102, 0.2); }
+        """)
+
         reject_btn = QPushButton("✗ 拒绝")
         reject_btn.clicked.connect(self._reject_correction)
         reject_btn.setEnabled(False)
@@ -1157,6 +1232,7 @@ class MedVoiceApp(QMainWindow):
         self.log_hint.setStyleSheet("color: #6b8a9a; font-size: 10px;")
 
         action_layout.addWidget(accept_btn)
+        action_layout.addWidget(accept_all_btn)
         action_layout.addWidget(reject_btn)
         action_layout.addStretch()
         action_layout.addWidget(self.log_hint)
@@ -1188,6 +1264,16 @@ class MedVoiceApp(QMainWindow):
         self.partial_label.setMaximumHeight(40)
         right_layout.addWidget(self.partial_label)
 
+        # 实时录音波形图（录音时显示滚动音量柱状图）
+        self.waveform = WaveformWidget()
+        self.waveform.setVisible(False)
+        right_layout.addWidget(self.waveform)
+
+        # 波形轮询定时器（~30fps 从 ASR 引擎读取实时音量电平）
+        self._wave_timer = QTimer(self)
+        self._wave_timer.setInterval(33)
+        self._wave_timer.timeout.connect(self._poll_audio_level)
+
         # 字段常用词面板
         self.field_panel = FieldWordsPanel()
         self.field_panel.setMaximumHeight(220)
@@ -1216,8 +1302,19 @@ class MedVoiceApp(QMainWindow):
         """)
         right_layout.addWidget(self.text_edit)
 
-        # ==================== AI 辅助诊断面板 ====================
+        # 音文对照播放器（录音结束后自动加载，可回放校对）
+        self.audio_player_widget = AudioPlayerWidget()
+        right_layout.addWidget(self.audio_player_widget)
+
+        # 字段名语法高亮
+        self.field_highlighter = FieldHighlighter(self.text_edit.document())
+
+        # 支持拖拽音频文件转写
+        self.setAcceptDrops(True)
+
+        # ==================== AI 辅助诊断面板（可折叠） ====================
         ai_group = QGroupBox("🔬 AI 辅助诊断")
+        self.ai_group = ai_group
         ai_group.setStyleSheet("""
             QGroupBox {
                 color: #00d4ff;
@@ -1272,6 +1369,24 @@ class MedVoiceApp(QMainWindow):
         ai_header.addWidget(qa_btn)
         ai_header.addWidget(self.ai_status_label)
         ai_header.addStretch()
+
+        # AI 面板折叠按钮
+        self.ai_collapse_btn = QPushButton("▲ 收起")
+        self.ai_collapse_btn.setFixedWidth(64)
+        self.ai_collapse_btn.setToolTip("折叠/展开 AI 诊断结果区域")
+        self.ai_collapse_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #6b8a9a;
+                border: 1px solid rgba(0,212,255,0.2);
+                border-radius: 8px;
+                padding: 3px 8px;
+                font-size: 11px;
+            }
+            QPushButton:hover { color: #00d4ff; border-color: rgba(0,212,255,0.5); }
+        """)
+        self.ai_collapse_btn.clicked.connect(self._toggle_ai_panel)
+        ai_header.addWidget(self.ai_collapse_btn)
         ai_layout.addLayout(ai_header)
 
         self.ai_result = QTextBrowser()
@@ -1341,12 +1456,33 @@ class MedVoiceApp(QMainWindow):
         self.asr.set_hotwords(dept)
 
         # 更新模板列表
+        self.template_combo.blockSignals(True)
         self.template_combo.clear()
         templates = self.template_engine.get_templates(dept)
-        for t in templates:
-            self.template_combo.addItem(t["name"])
+        self._all_template_names = [t["name"] for t in templates]
+        for name in self._all_template_names:
+            self.template_combo.addItem(name)
+        self.template_combo.blockSignals(False)
 
         self.status_bar.showMessage(f"当前科室：{dept} | 词库已更新")
+
+    def _filter_templates(self, search_text):
+        """模板搜索过滤（输入时实时筛选）"""
+        self.template_combo.blockSignals(True)
+        self.template_combo.clear()
+        if not search_text.strip():
+            # 空搜索→显示全部
+            for name in getattr(self, '_all_template_names', []):
+                self.template_combo.addItem(name)
+        else:
+            keyword = search_text.strip().lower()
+            for name in getattr(self, '_all_template_names', []):
+                if keyword in name.lower():
+                    self.template_combo.addItem(name)
+        self.template_combo.blockSignals(False)
+        # 如果只剩一个结果，自动选中
+        if self.template_combo.count() == 1:
+            self.template_combo.setCurrentIndex(0)
 
     def _on_template_changed(self, template_name):
         """模板选择"""
@@ -1788,9 +1924,30 @@ class MedVoiceApp(QMainWindow):
         self.partial_text = ""
         self.text_edit.setFocus()
 
+        # 保存录音前的编辑器内容（流式显示时保留已有文本）
+        self._stream_base_text = self.text_edit.toPlainText()
+        self._stream_has_partial = False  # 是否已收到流式结果
+        self.partial_label.setText("▍正在聆听，请开始说话...")
+
         # 开始录音时长计时
         self._record_start_ts = time.time()
         self._duration_timer.start()
+        self.recording_indicator.start()
+
+        # 显示波形图并开始轮询音量
+        self.waveform.setVisible(True)
+        self.waveform.set_active(True)
+        self._wave_timer.start()
+
+        # 模板动态热词增强：根据当前模板内容提升相关词汇识别率
+        template_name = self.template_combo.currentText()
+        if template_name and self.current_dept:
+            tpl_content = self.template_engine.get_template(self.current_dept, template_name)
+            if tpl_content:
+                self.asr.boost_hotwords_for_template(tpl_content)
+
+        # 字段上下文检测：根据编辑器末尾内容判断当前字段
+        self._update_field_context()
 
         self.listen_thread = ListenThread(self.asr)
         self.listen_thread.text_ready.connect(self._on_recognized)
@@ -1817,6 +1974,12 @@ class MedVoiceApp(QMainWindow):
         # 停止录音时长计时
         self._duration_timer.stop()
         self._record_start_ts = None
+        self.recording_indicator.stop()
+
+        # 停止波形图
+        self._wave_timer.stop()
+        self.waveform.set_active(False)
+        self.waveform.setVisible(False)
 
         # 停止自动停止计时器
         if hasattr(self, '_auto_stop_timer') and self._auto_stop_timer:
@@ -1857,6 +2020,7 @@ class MedVoiceApp(QMainWindow):
             return
         QApplication.clipboard().setText(text)
         self.status_bar.showMessage("📋 已复制全文到剪贴板")
+        Toast.show_toast(self, "已复制到剪贴板", "info")
 
     def _update_record_duration(self):
         """状态栏实时显示录音时长"""
@@ -1865,6 +2029,136 @@ class MedVoiceApp(QMainWindow):
         elapsed = int(time.time() - self._record_start_ts)
         mm, ss = divmod(elapsed, 60)
         self.status_bar.showMessage(f"🔴 录音中... {mm:02d}:{ss:02d}")
+
+    def _poll_audio_level(self):
+        """从 ASR 引擎轮询实时音量电平，喜入波形图"""
+        level = getattr(self.asr, '_current_level', 0.0)
+        self.waveform.add_level(level)
+
+    def _update_field_context(self):
+        """检测编辑器末尾的字段名，设置 ASR 字段上下文（用于 LM 偏置）"""
+        text = self.text_edit.toPlainText()
+        # 从末尾向前找最近的字段名
+        field_keywords = ['主诉', '现病史', '既往史', '个人史', '家族史',
+                          '体格检查', '辅助检查', '初步诊断', '诊疗经过',
+                          '出院情况', '出院医嘱', '影像表现', '诊断意见']
+        last_field = ""
+        last_pos = -1
+        for kw in field_keywords:
+            pos = text.rfind(kw)
+            if pos > last_pos:
+                last_pos = pos
+                last_field = kw
+        self.asr.set_field_context(last_field)
+
+    # ==================== UI 增强：面板折叠 / 专注模式 / 拖拽 ====================
+
+    def _toggle_left_panel(self):
+        """折叠/展开左侧纠错日志面板（F9）"""
+        self.left_panel.setVisible(not self.left_panel.isVisible())
+        state = "已展开" if self.left_panel.isVisible() else "已折叠"
+        self.status_bar.showMessage(f"纠错面板{state}")
+
+    def _toggle_ai_panel(self):
+        """折叠/展开 AI 诊断结果区域"""
+        visible = self.ai_result.isVisible()
+        self.ai_result.setVisible(not visible)
+        self.ai_collapse_btn.setText("▼ 展开" if visible else "▲ 收起")
+        # 收起时缩小面板高度
+        if visible:
+            self.ai_group.setMaximumHeight(52)
+        else:
+            self.ai_group.setMaximumHeight(16777215)  # 解除限制
+
+    def _toggle_focus_mode(self):
+        """专注录音模式（F11）：隐藏所有干扰面板，只留编辑器"""
+        self._focus_mode = not getattr(self, '_focus_mode', False)
+        if self._focus_mode:
+            # 记住原始状态
+            self._pre_focus = {
+                'left_visible': self.left_panel.isVisible(),
+                'field_visible': self.field_panel.isVisible(),
+                'ai_visible': self.ai_group.isVisible(),
+                'toolbar_visible': self.findChild(QToolBar).isVisible(),
+            }
+            self.left_panel.hide()
+            self.field_panel.hide()
+            self.ai_group.hide()
+            self.audio_player_widget.hide()
+            self.findChild(QToolBar).hide()
+            self.status_bar.showMessage("🎧 专注模式：按 F11 退出")
+            Toast.show_toast(self, "专注模式 · 按 F11 退出", "info")
+        else:
+            pf = getattr(self, '_pre_focus', {})
+            self.left_panel.setVisible(pf.get('left_visible', True))
+            self.field_panel.setVisible(pf.get('field_visible', True))
+            self.ai_group.setVisible(pf.get('ai_visible', True))
+            self.audio_player_widget.show()
+            self.findChild(QToolBar).setVisible(pf.get('toolbar_visible', True))
+            self.status_bar.showMessage("已退出专注模式")
+
+    def dragEnterEvent(self, event):
+        """拖拽进入：接受音频文件"""
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                path = url.toLocalFile()
+                if path.lower().endswith(('.wav', '.mp3', '.m4a', '.flac', '.ogg')):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event):
+        """拖拽释放：转写音频文件"""
+        if not event.mimeData().hasUrls():
+            return
+        for url in event.mimeData().urls():
+            path = url.toLocalFile()
+            if path.lower().endswith(('.wav', '.mp3', '.m4a', '.flac', '.ogg')):
+                self._transcribe_audio_file(path)
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def _transcribe_audio_file(self, path):
+        """后台转写音频文件并填入编辑器"""
+        if not self.asr.is_ready():
+            Toast.show_toast(self, "语音引擎未就绪，无法转写", "warning")
+            return
+        fname = os.path.basename(path)
+        self.status_bar.showMessage(f"🎧 正在转写：{fname} ...")
+        Toast.show_toast(self, f"开始转写 {fname}", "info", duration=1500)
+
+        def _run():
+            try:
+                text = self.asr.transcribe_file(path)
+                return text
+            except Exception as e:
+                print(f"[Main] 转写失败: {e}")
+                return ""
+
+        import threading
+
+        def _worker():
+            text = _run()
+            # 通过信号回到主线程更新 UI
+            self.file_transcribed.emit(text, fname)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_file_transcribed(self, text, fname):
+        """音频转写完成回调（主线程）"""
+        if text:
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            if self.text_edit.toPlainText().strip():
+                cursor.insertText("\n")
+            cursor.insertText(text)
+            self.text_edit.setTextCursor(cursor)
+            self.status_bar.showMessage(f"✅ 转写完成：{fname}（{len(text)} 字）")
+            Toast.show_toast(self, f"转写完成（{len(text)} 字）", "success")
+        else:
+            self.status_bar.showMessage(f"⚠️ 转写无结果：{fname}")
+            Toast.show_toast(self, "转写无结果，请检查音频", "warning")
 
     def _handle_voice_command(self, text):
         """拦截语音命令。命中则执行对应动作并返回 True（不再作为病历文本填充）"""
@@ -1987,9 +2281,30 @@ class MedVoiceApp(QMainWindow):
             self.partial_label.setText("⚠️ 处理识别结果时出错")
             self.status_bar.showMessage(f"错误: {e}")
 
+        # 录音结束后自动加载音频到播放器（供回放校对）
+        self._load_last_audio()
+
+    def _load_last_audio(self):
+        """把最近一次录音加载到音文对照播放器"""
+        audio_path = getattr(self.asr, 'last_audio_path', None)
+        if audio_path and os.path.exists(audio_path):
+            self.audio_player_widget.load(audio_path)
+
     def _on_partial(self, text):
-        """中间识别结果"""
-        self.partial_label.setText(f"🔊 识别中：{text}")
+        """流式识别中间结果：实时更新编辑器内容（边说边出字）"""
+        if not text:
+            return
+        self._stream_has_partial = True
+        self.partial_label.setText(f"🔊 识别中：{text[-40:]}")
+        # 实时将流式结果写入编辑器（替换上一次流式内容）
+        if hasattr(self, '_stream_base_text'):
+            # 保留录音前的已有内容，流式结果追加在后面
+            display = self._stream_base_text.rstrip() + "\n" + text if self._stream_base_text.strip() else text
+            self.text_edit.setPlainText(display)
+            # 光标移到末尾
+            cursor = self.text_edit.textCursor()
+            cursor.movePosition(QTextCursor.End)
+            self.text_edit.setTextCursor(cursor)
 
     def _run_correction(self):
         """执行纠错"""
@@ -2012,6 +2327,12 @@ class MedVoiceApp(QMainWindow):
         # 保存完整日志
         self._all_logs = log
 
+        # 记录纠错反馈（用于 LM 迭代训练）
+        try:
+            self.feedback.log_corrections(log, source="corrector")
+        except Exception:
+            pass
+
         # 应用筛选
         self._apply_filter()
 
@@ -2025,6 +2346,7 @@ class MedVoiceApp(QMainWindow):
         self.stats_label.setText(f"共{total}条 | 🔤{counts['错别字']} 🧠{counts['逻辑错误']} ⚠️{counts['缺项提醒']}")
 
         self.status_bar.showMessage(f"纠错完成，共 {total} 条建议")
+        Toast.show_toast(self, f"纠错完成，共 {total} 条建议", "success")
 
     def _apply_filter(self):
         """根据筛选按钮过滤日志"""
@@ -2163,6 +2485,37 @@ class MedVoiceApp(QMainWindow):
                 pass
         self.status_bar.showMessage(f"✓ 已接受纠错：{orig} → {corr}")
 
+    def _accept_all_corrections(self):
+        """一键接受所有纠错建议"""
+        if not self._all_logs:
+            Toast.show_toast(self, "没有纠错建议", "info")
+            return
+        count = sum(1 for item in self._all_logs
+                    if not item.get("_rejected") and item.get("原文") and item.get("修正"))
+        # 标记所有为已接受（清除拒绝列表中的对应项）
+        for item in self._all_logs:
+            orig = item.get("原文", "")
+            corr = item.get("修正", "")
+            if orig and corr:
+                self.corrector.rejections.pop((orig, corr), None)
+        # 刷新 rejection 文件
+        try:
+            serializable = [
+                "\x00".join(k) for k in self.corrector.rejections.keys()
+                if k[0] and k[1]
+            ]
+            with open(self.corrector.rejection_path, 'w', encoding='utf-8') as f:
+                json.dump(serializable, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+        # 反馈收集：标记所有 pending 为 accepted
+        try:
+            self.feedback.log_accept_all()
+        except Exception:
+            pass
+        self.status_bar.showMessage(f"✓ 已接受全部 {count} 条纠错")
+        Toast.show_toast(self, f"已接受全部 {count} 条纠错", "success")
+
     def _reject_correction(self):
         """拒绝当前纠错，写入个人偏好"""
         item = self.log_list.currentItem()
@@ -2179,6 +2532,12 @@ class MedVoiceApp(QMainWindow):
 
         # 记录拒绝规则
         self.corrector.save_rejection(orig, corr)
+
+        # 记录拒绝反馈（用于 LM 迭代训练）
+        try:
+            self.feedback.log_rejection(orig, corr)
+        except Exception:
+            pass
 
         # 恢复原文（从编辑器中撤销这条纠错）
         # 修复：只替换第一个匹配，避免 replace 替换所有相同文本导致误伤
@@ -2269,6 +2628,11 @@ class MedVoiceApp(QMainWindow):
             with open(path, 'w', encoding='utf-8') as f:
                 f.write(md_text)
             self.status_bar.showMessage(f"已导出：{path}")
+            # 收集导出文本作为高质量语料（用于 LM 迭代训练）
+            try:
+                self.feedback.collect_corpus(text)
+            except Exception:
+                pass
 
     def _convert_to_markdown(self, text):
         """将纯文本病历转为 Markdown 格式"""
@@ -2474,12 +2838,14 @@ class MedVoiceApp(QMainWindow):
                 self.current_user["id"], patient_name, dept, template_name, content, "草稿"
             )
             self.status_bar.showMessage("💾 病历已保存到病历库（新建）")
+            Toast.show_toast(self, "病历已保存", "success")
         else:
             self.db.update_record(
                 self.current_record_id, patient_name=patient_name,
                 department=dept, template_name=template_name, content=content
             )
             self.status_bar.showMessage("💾 病历已更新（已记录版本）")
+            Toast.show_toast(self, "病历已更新", "success")
 
         # 从本次保存的内容增量学习高频专业词 → 用户自适应热词
         try:
@@ -2489,6 +2855,13 @@ class MedVoiceApp(QMainWindow):
                 self.asr.update_user_hotwords(learned)
         except Exception as e:
             print(f"[Main] 增量学习热词失败: {e}")
+
+        # 收集高质量语料 + 标记纠错为已接受（用于 LM 迭代训练）
+        try:
+            self.feedback.collect_corpus(content)
+            self.feedback.log_accept_all()
+        except Exception:
+            pass
 
     def _extract_patient_name(self, content):
         """从病历文本中提取“姓名：XXX”字段，提不到返回空字符串"""

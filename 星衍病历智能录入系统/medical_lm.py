@@ -156,12 +156,13 @@ class MedicalLM:
 
     # ─── 重打分纠错 ───────────────────────────────────────
 
-    def rescore(self, text, max_corrections=3):
+    def rescore(self, text, max_corrections=3, field_context=""):
         """
         对 ASR 输出进行语言模型纠错（保守策略，短语级替换）：
         1. 滑窗计算局部得分，找到极低分区域
         2. 对低分区域，尝试用已知医学术语替换同长度片段
         3. 仅当替换后得分显著优于原始时才采纳
+        field_context: 当前字段名（如"现病史"），有值时降低纠错阈值、更积极替换
         """
         if not text or not self._loaded or len(text) < 6:
             return text
@@ -169,6 +170,9 @@ class MedicalLM:
         n = len(text)
         corrections = 0
         result = text
+
+        # 字段偏置：有上下文时阈值更敏感（2.0σ → 1.7σ）
+        sigma_factor = 1.7 if field_context else 2.0
 
         # 第1步：计算每个位置的 trigram 得分
         pos_scores = self._compute_pos_scores(result)
@@ -178,7 +182,7 @@ class MedicalLM:
         mean_s = sum(pos_scores) / len(pos_scores)
         var_s = sum((s - mean_s) ** 2 for s in pos_scores) / len(pos_scores)
         std_s = var_s ** 0.5
-        threshold = mean_s - 2.0 * std_s
+        threshold = mean_s - sigma_factor * std_s
 
         # 第2步：找连续低分区域（窗口 2~6 字）
         low_positions = [i for i, s in enumerate(pos_scores) if s < threshold]
@@ -205,10 +209,12 @@ class MedicalLM:
 
             best_replacement = None
             best_score = original_score
+            # 字段偏置：有上下文时降低采纳门槛（1.0 → 0.7）
+            adopt_margin = 0.7 if field_context else 1.0
             for cand in candidates:
                 test_text = result[:start] + cand + result[end:]
                 cand_score = self.score_region(test_text, start, end)
-                if cand_score > best_score + 1.0:  # 显著优于原始
+                if cand_score > best_score + adopt_margin:
                     best_score = cand_score
                     best_replacement = cand
 

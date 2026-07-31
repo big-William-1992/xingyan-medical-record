@@ -43,6 +43,8 @@ class ASREngine:
         self._current_hotwords = ""
         self.input_device = None  # 录音设备 index（None = 系统默认）
         self.enable_denoise = True  # 录音降噪预处理开关
+        self._current_level = 0.0  # 实时音量电平（0~1，供波形图轮询）
+        self.last_audio_path = None  # 最近一次录音保留的 wav 路径（供回放）
 
         # 热词文件路径（和 asr_engine.py 同目录）
         base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -50,15 +52,22 @@ class ASREngine:
         self._postprocess_path = os.path.join(base_dir, "postprocess_hotwords.txt")
         # 用户自适应热词（从历史病历提取的高频词，每行一个）
         self._user_hotwords_path = os.path.join(base_dir, "user_hotwords.txt")
+        # 知识图谱热词池（xywy-KG 提取，按科室智能筛选）
+        self._kg_hotwords_path = os.path.join(base_dir, "kg_hotwords.txt")
         self._user_hotwords = []
+        self._kg_hotwords = {}  # {section: [words]} 知识图谱热词分区
         self._hotword_sections = {}  # {section_name: [words]}
         self._hotword_file = ""  # 当前科室热词临时文件路径
         self._postprocess_matcher = None  # 文本级纠错 matcher
         self._lm = None  # 医学语言模型（3-gram 重打分）
+        self._confusion_pairs = {}  # ASR 高频混淆对（从用户反馈自动提取）
+        self._field_context = ""  # 当前字段上下文（用于字段级 LM 偏置）
         self._load_hotwords()
         self._load_user_hotwords()
+        self._load_kg_hotwords()
         self._build_postprocess_matcher()
         self._load_language_model()
+        self._load_confusion_pairs()
 
         # 加载 Paraformer + VAD + 标点模型
         self._load_model()
@@ -109,6 +118,29 @@ class ASREngine:
         except Exception as e:
             print(f"[ASR] 加载用户热词失败: {e}")
 
+    def _load_kg_hotwords(self):
+        """加载知识图谱热词池（kg_hotwords.txt，分区格式 [知识图谱-XX]）"""
+        self._kg_hotwords = {}
+        if not os.path.exists(self._kg_hotwords_path):
+            return
+        try:
+            current_section = ""
+            with open(self._kg_hotwords_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    raw = line.strip()
+                    if not raw or raw.startswith("#"):
+                        continue
+                    if raw.startswith("[") and raw.endswith("]"):
+                        current_section = raw[1:-1]
+                        self._kg_hotwords.setdefault(current_section, [])
+                        continue
+                    if current_section:
+                        self._kg_hotwords[current_section].append(raw)
+            total = sum(len(v) for v in self._kg_hotwords.values())
+            print(f"[ASR] 知识图谱热词池: {total} 个 ({len(self._kg_hotwords)} 个分区)")
+        except Exception as e:
+            print(f"[ASR] 加载KG热词失败: {e}")
+
     def update_user_hotwords(self, words, max_words=300):
         """写入/合并用户自适应热词并重新加载。words: 词语列表。"""
         merged = list(dict.fromkeys(
@@ -156,6 +188,12 @@ class ASREngine:
         if self._user_hotwords:
             words.extend(self._user_hotwords)
 
+        # 知识图谱热词（智能筛选，控制总量不超过 3000）
+        kg_budget = max(0, 3000 - len(words))
+        if kg_budget > 0 and self._kg_hotwords:
+            kg_words = self._select_kg_hotwords(department, kg_budget)
+            words.extend(kg_words)
+
         # 去重（保序）
         words = list(dict.fromkeys(words))
 
@@ -176,6 +214,39 @@ class ASREngine:
         except Exception as e:
             print(f"[ASR] 写入热词文件失败: {e}")
             self._hotword_file = ""
+
+    def _select_kg_hotwords(self, department, budget):
+        """
+        从知识图谱热词池中智能筛选，控制总量不超过 budget。
+        优先级：药物 > 检查 > 症状 > 科室 > 疾病（截断）
+        如果指定了科室，优先加载该科室相关疾病。
+        """
+        selected = []
+        # 按优先级加载分区
+        priority_order = ["知识图谱-药物", "知识图谱-检查", "知识图谱-症状", "知识图谱-科室"]
+        for section in priority_order:
+            if len(selected) >= budget:
+                break
+            pool = self._kg_hotwords.get(section, [])
+            remaining = budget - len(selected)
+            selected.extend(pool[:remaining])
+
+        # 疾病词：如果指定科室，优先加载科室相关疾病
+        disease_pool = self._kg_hotwords.get("知识图谱-疾病", [])
+        remaining = budget - len(selected)
+        if remaining > 0 and disease_pool:
+            if department and department != "通用":
+                # 科室相关疾病优先（包含科室关键字的）
+                dept_diseases = [w for w in disease_pool if department[:2] in w]
+                other_diseases = [w for w in disease_pool if department[:2] not in w]
+                selected.extend(dept_diseases[:remaining])
+                remaining = budget - len(selected)
+                if remaining > 0:
+                    selected.extend(other_diseases[:remaining])
+            else:
+                selected.extend(disease_pool[:remaining])
+
+        return selected
 
     def _build_postprocess_matcher(self):
         """构建文本级纠错 matcher（识别后纠正误识别词）"""
@@ -209,6 +280,122 @@ class ASREngine:
         except Exception as e:
             self._lm = None
             print(f"[ASR] 语言模型加载失败: {e}")
+
+    # ─── 混淆对纠错（从用户反馈自动提取） ─────────────
+
+    def _load_confusion_pairs(self):
+        """加载 ASR 高频混淆对（asr_confusion_pairs.json）"""
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        path = os.path.join(base_dir, "asr_confusion_pairs.json")
+        if not os.path.exists(path):
+            return
+        try:
+            import json
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            # 格式: {"错误词": "正确词", ...}
+            if isinstance(data, dict):
+                self._confusion_pairs = data
+                print(f"[ASR] 混淆对纠错表: {len(data)} 对")
+        except Exception as e:
+            print(f"[ASR] 加载混淆对失败: {e}")
+
+    @staticmethod
+    def extract_confusion_pairs(min_count=3):
+        """
+        从 correction_feedback.jsonl 中提取高频接受的纠错对，
+        生成 asr_confusion_pairs.json。
+        规则：同一 (original→corrected) 被接受 ≥ min_count 次 → 写入混淆对表。
+        """
+        import json
+        from collections import Counter
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        feedback_path = os.path.join(base_dir, "correction_feedback.jsonl")
+        output_path = os.path.join(base_dir, "asr_confusion_pairs.json")
+
+        if not os.path.exists(feedback_path):
+            print("[Extract] 无反馈数据，跳过")
+            return {}
+
+        pair_counter = Counter()
+        try:
+            with open(feedback_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # 只统计被接受的纠错
+                    if rec.get("status") != "accepted":
+                        continue
+                    orig = rec.get("original", "").strip()
+                    corr = rec.get("corrected", "").strip()
+                    if orig and corr and orig != corr and len(orig) <= 10:
+                        pair_counter[(orig, corr)] += 1
+        except Exception as e:
+            print(f"[Extract] 读取反馈失败: {e}")
+            return {}
+
+        # 筛选高频对
+        pairs = {orig: corr for (orig, corr), cnt in pair_counter.items() if cnt >= min_count}
+
+        # 合并已有混淆对（保留旧的 + 新增）
+        existing = {}
+        if os.path.exists(output_path):
+            try:
+                with open(output_path, 'r', encoding='utf-8') as f:
+                    existing = json.load(f)
+            except Exception:
+                pass
+        existing.update(pairs)
+
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                json.dump(existing, f, ensure_ascii=False, indent=2)
+            print(f"[Extract] 混淆对已更新: {len(existing)} 对（新增 {len(pairs)}）")
+        except Exception as e:
+            print(f"[Extract] 写入失败: {e}")
+        return existing
+
+    # ─── 模板动态热词增强 ─────────────────────────
+
+    def boost_hotwords_for_template(self, template_content):
+        """
+        根据当前模板内容提取医学关键词，追加到热词文件（权重×2）。
+        录音前调用，让 Paraformer 对模板相关词汇更敏感。
+        """
+        if not template_content:
+            return
+        # 提取模板中的医学关键词（2~8 字中文词）
+        import re as _re
+        # 匹配常见医学词汇模式
+        candidates = _re.findall(r'[\u4e00-\u9fff]{2,8}', template_content)
+        # 过滤非医学词（去掉常见虚词）
+        stopwords = {'患者', '入院', '记录', '日期', '姓名', '性别', '年龄', '科室',
+                     '床号', '住院号', '内容', '情况', '处理', '意见', '结果',
+                     '正常', '未见', '异常', '检查', '报告', '时间', '天', '年'}
+        keywords = [w for w in candidates if w not in stopwords and len(w) >= 2]
+        # 去重
+        keywords = list(dict.fromkeys(keywords))
+
+        if not keywords:
+            return
+
+        # 重建热词文件：原有热词 + 模板关键词（写两遍 = 权重×2）
+        base_words = self._current_hotwords.split() if self._current_hotwords else []
+        boosted = base_words + keywords + keywords  # 关键词写两遍提升权重
+        boosted = list(dict.fromkeys(boosted))  # 去重保序
+        self._write_hotword_file(boosted)
+        print(f"[ASR] 模板热词增强: +{len(keywords)} 个关键词")
+
+    # ─── 字段级 LM 偏置 ─────────────────────────
+
+    def set_field_context(self, field_name):
+        """设置当前字段上下文（用于 LM 重打分偏置）"""
+        self._field_context = field_name or ""
 
     # ─── 模型加载 ─────────────────────────────────────────
 
@@ -248,6 +435,13 @@ class ASREngine:
                 if status:
                     print(f"[ASR] 录音状态: {status}")
                 self._recorded_frames.append(indata.copy())
+                # 计算实时音量电平（RMS 归一化到 0~1）供波形图使用
+                try:
+                    arr = np.asarray(indata, dtype=np.float32)
+                    rms = float(np.sqrt(np.mean(arr ** 2))) if arr.size else 0.0
+                    self._current_level = min(1.0, rms / 3000.0)
+                except Exception:
+                    self._current_level = 0.0
 
             stream = sd.InputStream(
                 samplerate=self.sample_rate,
@@ -271,7 +465,109 @@ class ASREngine:
                 status_callback(f"录音错误: {e}")
             print(f"[ASR] 录音异常: {e}")
 
-    # ─── 识别 ─────────────────────────────────────────────
+    # ─── 识别 ─────────────────────────────────────────
+
+    def _stream_recognize_loop(self):
+        """流式识别监视线程：首次 1.5s 出字，后续每 3s 更新，能量门控避免空跑"""
+        import time as _time
+        first_interval = 1.5   # 首包等待（秒）
+        interval = 3.0         # 后续间隔（秒）
+        energy_threshold = 0.02  # 音量门控（RMS 归一化后）
+        speech_frames_needed = 3  # 连续 N 帧有声音才触发
+        last_count = 0
+        is_first = True
+        speech_streak = 0  # 连续有声帧计数
+
+        while self.is_listening:
+            wait = first_interval if is_first else interval
+            _time.sleep(wait)
+            if not self.is_listening:
+                break
+
+            # 能量门控：检测是否真的有人在说话
+            if self._current_level < energy_threshold:
+                speech_streak = 0
+                if is_first:
+                    continue  # 首包必须有声音才触发
+                # 后续包：静音时跳过（但不要太久不更新）
+                current_count = len(self._recorded_frames)
+                if current_count - last_count < int(interval * self.sample_rate / 1600):
+                    continue
+            else:
+                speech_streak += 1
+                if is_first and speech_streak < speech_frames_needed:
+                    continue  # 首包需连续几帧有声
+
+            # 避免重叠推理
+            if self._stream_busy:
+                continue
+            self._stream_busy = True
+            try:
+                current_count = len(self._recorded_frames)
+                last_count = current_count
+                frames_snapshot = list(self._recorded_frames)
+                audio = np.concatenate(frames_snapshot, axis=0)
+                if audio.ndim == 2:
+                    audio = audio.flatten()
+                # 首包跳过降噪（省 ~100ms），后续包正常降噪
+                if not is_first and self.enable_denoise:
+                    audio = self._denoise(audio)
+                # 写临时 wav
+                tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+                os.close(tmp_fd)
+                try:
+                    with wave.open(tmp_path, 'wb') as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(self.sample_rate)
+                        wf.writeframes(audio.astype(np.int16).tobytes())
+                    text = self._recognize_file_fast(tmp_path)
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+
+                if text and self._on_partial:
+                    self._on_partial(text)
+                is_first = False  # 无论是否识别到文字，首包阶段结束
+            except Exception as e:
+                print(f"[ASR] 流式识别异常: {e}")
+                is_first = False
+            finally:
+                self._stream_busy = False
+
+    def _recognize_file_fast(self, wav_path):
+        """轻量识别（跳过 LM 重打分，用于流式中间结果，速度优先）"""
+        if not self.is_ready():
+            return ""
+        try:
+            kwargs = {"input": wav_path, "language": "zh", "use_itn": True}
+            if self._hotword_file and os.path.exists(self._hotword_file):
+                kwargs["hotword"] = self._hotword_file
+            result = self.model.generate(**kwargs)
+            if result and len(result) > 0:
+                texts = []
+                for item in result:
+                    if isinstance(item, dict):
+                        t = item.get("text", "") or item.get("sentence", "") or ""
+                    elif isinstance(item, str):
+                        t = item
+                    else:
+                        t = ""
+                    t = t.strip()
+                    if t:
+                        texts.append(t)
+                text = "".join(texts)
+                text = re.sub(r'<\|[^|]*\|>', '', text).strip()
+                return text
+            return ""
+        except Exception:
+            return ""
+
+    def get_audio_level(self):
+        """返回当前录音音量电平（0~1），供 UI 波形图轮询"""
+        return self._current_level
 
     def _denoise(self, audio_int16):
         """轻量降噪预处理（纯 numpy，无额外依赖）：
@@ -372,9 +668,16 @@ class ASREngine:
 
                 text = post_process_medical(text)
 
+                # 混淆对纠错：确定性替换高频误识别词
+                if self._confusion_pairs:
+                    for wrong, right in self._confusion_pairs.items():
+                        if wrong in text:
+                            text = text.replace(wrong, right)
+
                 # 语言模型重打分：纠正低概率区域（误识别）
                 if self._lm and self._lm.is_ready:
-                    text = self._lm.rescore(text)
+                    # 字段级偏置：当前字段上下文传入 LM，提升字段相关术语权重
+                    text = self._lm.rescore(text, field_context=self._field_context)
 
                 print(f"[ASR] 识别结果({len(texts)}段): {text[:120]}")
                 return text
@@ -390,25 +693,79 @@ class ASREngine:
 
     # ─── 生命周期 ─────────────────────────────────────────
 
+    def transcribe_file(self, audio_path):
+        """
+        转写音频文件（供拖拽/导入使用）。
+        支持 wav；mp3/m4a/flac 等尝试用 soundfile 读取后转 wav。
+        返回识别文本（已含热词+纠错+LM重打分）。
+        """
+        if not self.is_ready():
+            return ""
+        if not os.path.exists(audio_path):
+            return ""
+        ext = os.path.splitext(audio_path)[1].lower()
+        if ext == ".wav":
+            return self._recognize_file(audio_path)
+        # 非 wav：尝试用 soundfile 读取并重采样为 16k wav
+        try:
+            import soundfile as sf
+            import numpy as np
+            data, sr = sf.read(audio_path, dtype="float32")
+            if data.ndim > 1:
+                data = data.mean(axis=1)
+            if sr != self.sample_rate:
+                ratio = self.sample_rate / float(sr)
+                new_len = int(len(data) * ratio)
+                idx = np.linspace(0, len(data) - 1, new_len)
+                data = np.interp(idx, np.arange(len(data)), data)
+            tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
+            os.close(tmp_fd)
+            import wave as _wave
+            pcm = (data * 32767).astype(np.int16)
+            with _wave.open(tmp_path, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.sample_rate)
+                wf.writeframes(pcm.tobytes())
+            try:
+                return self._recognize_file(tmp_path)
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+        except Exception as e:
+            print(f"[ASR] 音频文件转写失败: {e}")
+            return ""
+
     def start_listening(self, on_result=None, on_partial=None):
-        """开始录音"""
+        """开始录音（支持流式回调：on_partial(text) 边说边出字）"""
         if not self.is_ready():
             return False
         self.is_listening = True
         self._recorded_frames = []
         self._recording_started.clear()
+        self._stream_busy = False  # 流式识别锁（避免重叠推理）
+        self._on_partial = on_partial
         self._record_thread = threading.Thread(target=self._record_loop, daemon=True)
         self._record_thread.start()
-        print("[ASR] 开始录音")
+        # 流式识别监视线程：每隔几秒对已录音频做一次快速识别
+        self._stream_thread = threading.Thread(
+            target=self._stream_recognize_loop, daemon=True
+        )
+        self._stream_thread.start()
+        print("[ASR] 开始录音（流式模式）")
         return True
 
     def stop_listening(self):
-        """停止录音，返回识别文本"""
+        """停止录音，返回最终识别文本（全量精确识别）"""
         self.is_listening = False
         if self._record_thread:
             self._recording_started.wait(timeout=3)
             if self._record_thread.is_alive():
                 self._record_thread.join(timeout=5)
+        # 等待流式线程退出
+        if hasattr(self, '_stream_thread') and self._stream_thread:
+            self._stream_thread.join(timeout=3)
+            self._stream_thread = None
 
         if not self._recorded_frames:
             print("[ASR] 没有录音数据")
@@ -439,6 +796,23 @@ class ASREngine:
                 wf.setframerate(self.sample_rate)
                 wf.writeframes(audio_data.tobytes())
 
+            # 保留一份录音到 recordings/ 目录（供音文对照回放）
+            try:
+                rec_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
+                os.makedirs(rec_dir, exist_ok=True)
+                import datetime
+                stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                keep_path = os.path.join(rec_dir, f"rec_{stamp}.wav")
+                with wave.open(keep_path, 'wb') as wf2:
+                    wf2.setnchannels(1)
+                    wf2.setsampwidth(2)
+                    wf2.setframerate(self.sample_rate)
+                    wf2.writeframes(audio_data.tobytes())
+                self.last_audio_path = keep_path
+                self._cleanup_old_recordings(rec_dir)
+            except Exception as e:
+                print(f"[ASR] 保留录音文件失败: {e}")
+
             text = self._recognize_file(tmp_path)
             print(f"[ASR] 识别完成，返回文本长度：{len(text)}")
             return text
@@ -456,6 +830,18 @@ class ASREngine:
     def process_audio_file(self, wav_path):
         """处理已有的音频文件"""
         return self._recognize_file(wav_path)
+
+    def _cleanup_old_recordings(self, rec_dir, keep=30):
+        """只保留最近 keep 份录音，避免磁盘堆积"""
+        try:
+            files = sorted(
+                (os.path.join(rec_dir, f) for f in os.listdir(rec_dir) if f.endswith(".wav")),
+                key=os.path.getmtime
+            )
+            for old in files[:-keep]:
+                os.remove(old)
+        except Exception:
+            pass
 
     def set_input_device(self, device_index):
         """设置录音输入设备 index（None 为系统默认）"""

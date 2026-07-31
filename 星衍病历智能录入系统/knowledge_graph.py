@@ -694,6 +694,9 @@ class MedicalKnowledgeGraph:
         """合并一份已解析的 JSON 知识载荷，返回新增/更新实体数"""
         if not isinstance(data, dict):
             return 0
+        # 三元组格式（xywy_kg.json 等）：{"meta":..., "entities":[...], "triples":[{"s","p","o"}]}
+        if "triples" in data and "entities" in data:
+            return self._merge_triples_payload(data)
         count = 0
         for name, info in (data.get("diseases") or {}).items():
             info = dict(info or {})
@@ -735,6 +738,51 @@ class MedicalKnowledgeGraph:
                 self._add_relation(name, "FOOD_FOR", disease)
                 self._add_relation(disease, "RECOMMEND_FOOD", name)
             count += 1
+        return count
+
+    def _merge_triples_payload(self, data):
+        """
+        合并三元组格式的知识图谱（xywy-KG 等）。
+        格式: {"entities": [...], "triples": [{"s": 主体, "p": 关系, "o": 客体}]}
+        关系映射: 症状→HAS_SYMPTOM, 推荐药物→TREATED_BY, 检查项目→HAS_EXAM,
+                  就诊科室→BELONGS_TO, 并发疾病→COMPLICATES, 治疗方式→TREATED_BY
+        """
+        # 关系名 → (内部关系, 客体类型)
+        rel_map = {
+            "症状": ("HAS_SYMPTOM", "症状"),
+            "并发疾病": ("COMPLICATES", "疾病"),
+            "推荐药物": ("TREATED_BY", "药物"),
+            "检查项目": ("HAS_EXAM", "检查"),
+            "就诊科室": ("BELONGS_TO", "科室"),
+            "治疗方式": ("TREATED_BY", "治疗"),
+            "属于科室": ("BELONGS_TO", "科室"),
+            "预防": ("PREVENTED_BY", "预防"),
+            "病因": ("CAUSED_BY", "病因"),
+        }
+        # 先注册所有实体为疾病（三元组中 subject 通常是疾病）
+        count = 0
+        for entity_name in data.get("entities", []):
+            if entity_name and entity_name not in self.entities:
+                self.entities[entity_name] = {"type": "疾病", "source": "xywy-KG"}
+                self.entity_types.setdefault(entity_name, "疾病")
+                count += 1
+        # 处理三元组
+        for tri in data.get("triples", []):
+            s, p, o = tri.get("s", ""), tri.get("p", ""), tri.get("o", "")
+            if not s or not o:
+                continue
+            mapping = rel_map.get(p)
+            if not mapping:
+                continue
+            internal_rel, obj_type = mapping
+            self._add_relation(s, internal_rel, o)
+            self.entity_types.setdefault(o, obj_type)
+            # 反向关系
+            if internal_rel == "HAS_SYMPTOM":
+                self._add_relation(o, "INDICATES", s)
+            elif internal_rel == "TREATED_BY":
+                self._add_relation(o, "TREATS", s)
+        print(f"[KG] 三元组导入: {count} 实体, {len(data.get('triples', []))} 关系")
         return count
 
     def normalize(self, name):
