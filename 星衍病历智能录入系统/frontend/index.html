@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI · 智能病历录入</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+
+/* ═══ Dark Theme (Night) ═══ */
+[data-theme="dark"]{
+  --bg:#080c14;--bg2:#0d1117;--bg3:#151d28;--bg4:#1c2636;
+  --surface:#141c28;--surface2:#1a2535;
+  --border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.12);
+  --accent:#3b82f6;--accent2:#2563eb;--accent-dim:rgba(59,130,246,.12);--accent-glow:rgba(59,130,246,.3);
+  --emerald:#34d399;--emerald-dim:rgba(52,211,153,.1);
+  --amber:#fbbf24;--amber-dim:rgba(251,191,36,.08);
+  --rose:#fb7185;--rose-dim:rgba(251,113,133,.1);
+  --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;--text4:#475569;
+  --glass:rgba(13,17,23,.85);--glass-blur:blur(20px);
+  --card-radius:12px;--shadow:0 8px 32px rgba(0,0,0,.4);
+}
+
+/* ═══ Light Theme (Day - Glassmorphism) ═══ */
+[data-theme="light"]{
+  --bg:#e8edf5;--bg2:rgba(255,255,255,.55);--bg3:rgba(255,255,255,.7);--bg4:rgba(255,255,255,.85);
+  --surface:rgba(255,255,255,.6);--surface2:rgba(255,255,255,.75);
+  --border:rgba(0,0,0,.06);--border2:rgba(0,0,0,.1);
+  --accent:#0077b6;--accent2:#005f8a;--accent-dim:rgba(0,119,182,.08);--accent-glow:rgba(0,119,182,.2);
+  --emerald:#059669;--emerald-dim:rgba(5,150,105,.08);
+  --amber:#d97706;--amber-dim:rgba(217,119,6,.06);
+  --rose:#e11d48;--rose-dim:rgba(225,29,72,.06);
+  --text:#1e293b;--text2:#475569;--text3:#64748b;--text4:#94a3b8;
+  --glass:rgba(255,255,255,.45);--glass-blur:blur(24px) saturate(1.8);
+  --card-radius:16px;--shadow:0 8px 32px rgba(0,0,0,.08);
+}
+
+:root{
+  --font-body:-apple-system,'PingFang SC','Noto Sans SC','Microsoft YaHei',sans-serif;
+  --font-mono:'SF Mono','JetBrains Mono','Fira Code',monospace;
+  --ease:cubic-bezier(.4,0,.2,1);--ease-spring:cubic-bezier(.34,1.56,.64,1);
+}
+html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:var(--bg);color:var(--text);transition:background .4s var(--ease),color .3s}
+
+/* ─── Ambient Background ─── */
+.ambient{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+[data-theme="light"] .ambient{background:linear-gradient(135deg,#dbeafe 0%,#e0e7ff 30%,#f0fdf4 60%,#fef3c7 100%)}
+[data-theme="dark"] .ambient::before{content:'';position:absolute;top:-40%;right:-20%;width:800px;height:800px;background:radial-gradient(circle,rgba(59,130,246,.03) 0%,transparent 60%);animation:drift 20s ease-in-out infinite alternate}
+[data-theme="dark"] .ambient::after{content:'';position:absolute;bottom:-30%;left:-10%;width:600px;height:600px;background:radial-gradient(circle,rgba(52,211,153,.02) 0%,transparent 60%);animation:drift 25s ease-in-out infinite alternate-reverse}
+@keyframes drift{0%{transform:translate(0,0)}100%{transform:translate(30px,-20px)}}
+
+/* ─── Layout ── */
+.app{position:relative;z-index:1;display:grid;grid-template-rows:auto 1fr auto;height:100vh}
+
+/* ─── Top Bar ─── */
+.topbar{display:flex;align-items:center;padding:12px 24px;gap:12px;background:var(--glass);backdrop-filter:var(--glass-blur);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:10px;margin-right:16px}
+.brand-mark{width:32px;height:32px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--emerald));display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff;box-shadow:0 2px 8px var(--accent-glow)}
+.brand-name{font-weight:700;font-size:15px;color:var(--text);letter-spacing:-.3px}
+.brand-ver{font-size:10px;color:var(--text3);margin-left:-4px}
+.topbar select{padding:6px 12px;border-radius:8px;font-size:12px;background:var(--surface);border:1px solid var(--border);color:var(--text2);cursor:pointer;transition:all .2s;appearance:none;padding-right:26px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2364748b'%3E%3Cpath d='M3 5l3 3 3-3'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 8px center;backdrop-filter:blur(8px)}
+.topbar select:hover{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim)}
+.topbar select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.topbar .spacer{flex:1}
+.topbar .act{padding:6px 14px;border-radius:8px;font-size:11px;font-weight:600;background:var(--surface);border:1px solid var(--border);color:var(--text3);cursor:pointer;transition:all .15s var(--ease);backdrop-filter:blur(8px)}
+.topbar .act:hover{background:var(--surface2);color:var(--text2);border-color:var(--border2);transform:translateY(-1px)}
+.topbar .act.primary{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 2px 12px var(--accent-glow)}
+.topbar .act.primary:hover{background:var(--accent2);transform:translateY(-1px);box-shadow:0 4px 16px var(--accent-glow)}
+.topbar .conn-dot{width:7px;height:7px;border-radius:50%;margin-right:4px;display:inline-block}
+.topbar .conn-dot.ok{background:var(--emerald);box-shadow:0 0 6px var(--emerald)}
+.topbar .conn-dot.err{background:var(--rose);box-shadow:0 0 6px var(--rose)}
+.theme-toggle{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--surface);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .2s}
+.theme-toggle:hover{background:var(--surface2);transform:rotate(15deg)}
+
+/* ─── Main Grid ─── */
+.main{display:grid;grid-template-columns:240px 1fr;overflow:hidden;transition:grid-template-columns .3s var(--ease)}
+.main.collapsed{grid-template-columns:0px 1fr}
+
+/* ─── Sidebar ── */
+.sidebar{background:var(--glass);backdrop-filter:var(--glass-blur);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden;transition:opacity .2s}
+.main.collapsed .sidebar{opacity:0;pointer-events:none}
+.sidebar-hd{padding:16px 18px 10px;font-size:10px;font-weight:700;color:var(--text4);text-transform:uppercase;letter-spacing:1.2px}
+.sidebar-list{flex:1;overflow-y:auto;padding:0 10px 12px}
+.sidebar-item{padding:10px 14px;border-radius:10px;font-size:12.5px;color:var(--text3);cursor:pointer;transition:all .15s var(--ease);margin-bottom:2px;display:flex;align-items:center;gap:10px}
+.sidebar-item:hover{background:var(--surface);color:var(--text2)}
+.sidebar-item.active{background:var(--accent-dim);color:var(--accent);font-weight:600;box-shadow:inset 3px 0 0 var(--accent)}
+.sidebar-item .ico{font-size:14px;width:20px;text-align:center}
+.sidebar-item .tag{margin-left:auto;font-size:9px;padding:2px 6px;border-radius:4px;background:var(--amber-dim);color:var(--amber);font-weight:700}
+.sidebar-sep{height:1px;background:var(--border);margin:10px 14px}
+
+/* ─── Editor Zone ─── */
+.editor-zone{display:flex;flex-direction:column;overflow:hidden;position:relative}
+.field-nav{display:flex;align-items:center;padding:10px 24px;gap:6px;border-bottom:1px solid var(--border);overflow-x:auto;background:var(--glass);backdrop-filter:blur(12px)}
+.field-nav::-webkit-scrollbar{height:0}
+.field-pill{padding:5px 14px;border-radius:20px;font-size:11px;font-weight:600;color:var(--text4);border:1px solid transparent;cursor:pointer;white-space:nowrap;transition:all .15s var(--ease);user-select:none}
+.field-pill:hover{color:var(--text2);background:var(--surface)}
+.field-pill.active{color:var(--accent);background:var(--accent-dim);border-color:var(--accent);box-shadow:0 0 8px var(--accent-dim)}
+.editor-scroll{flex:1;overflow-y:auto;padding:36px 52px 140px}
+.editor{max-width:800px;margin:0 auto;outline:none;font-size:15px;line-height:2.1;color:var(--text);caret-color:var(--accent);min-height:300px;white-space:pre-wrap;word-wrap:break-word}
+.editor .fl{color:var(--accent);font-weight:700;cursor:pointer;border-radius:4px;padding:2px 4px;transition:all .15s;position:relative}
+.editor .fl::after{content:'';position:absolute;bottom:0;left:4px;right:4px;height:2px;background:var(--accent);opacity:.2;border-radius:1px;transition:opacity .15s}
+.editor .fl:hover{background:var(--accent-dim)}.editor .fl:hover::after{opacity:.5}
+.editor .fl.active{background:var(--accent-dim)}.editor .fl.active::after{opacity:1}
+.editor .val{color:var(--text)}.editor .val.empty{color:var(--text4);font-style:italic;font-size:13.5px}
+.editor .gap{height:16px}
+
+/* ─── Dictation Bar ─── */
+.dict-bar{position:absolute;bottom:28px;left:50%;transform:translateX(-50%);background:var(--glass);backdrop-filter:var(--glass-blur);border:1px solid var(--border2);border-radius:32px;padding:10px 10px 10px 24px;display:flex;align-items:center;gap:16px;box-shadow:var(--shadow),0 0 0 1px rgba(255,255,255,.05) inset;transition:all .3s var(--ease);z-index:50}
+.dict-bar.recording{border-color:var(--accent);box-shadow:var(--shadow),0 0 40px var(--accent-dim)}
+.dict-bar .wave{display:flex;align-items:center;gap:2.5px;height:26px;opacity:0;transition:opacity .2s}
+.dict-bar.recording .wave{opacity:1}
+.dict-bar .wave i{display:block;width:3px;border-radius:2px;background:var(--accent);animation:pbar .6s ease-in-out infinite alternate}
+.dict-bar .wave i:nth-child(1){height:7px;animation-delay:0s}.dict-bar .wave i:nth-child(2){height:16px;animation-delay:.07s}.dict-bar .wave i:nth-child(3){height:22px;animation-delay:.14s}.dict-bar .wave i:nth-child(4){height:12px;animation-delay:.21s}.dict-bar .wave i:nth-child(5){height:18px;animation-delay:.1s}.dict-bar .wave i:nth-child(6){height:9px;animation-delay:.18s}
+@keyframes pbar{0%{transform:scaleY(.3);opacity:.4}100%{transform:scaleY(1);opacity:1}}
+.dict-bar .label{font-size:12.5px;color:var(--text3);font-weight:500;transition:color .2s}
+.dict-bar.recording .label{color:var(--accent)}
+.dict-bar .time{font-family:var(--font-mono);font-size:11px;color:var(--text4);min-width:38px}
+.dict-bar .rec-btn{width:40px;height:40px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s var(--ease)}
+.dict-bar .rec-btn.idle{background:var(--surface2);color:var(--text3)}
+.dict-bar .rec-btn.idle:hover{background:var(--accent-dim);color:var(--accent);transform:scale(1.05)}
+.dict-bar .rec-btn.active{background:var(--rose);color:#fff;animation:rpulse 1.5s infinite;box-shadow:0 0 16px var(--rose-dim)}
+@keyframes rpulse{0%,100%{box-shadow:0 0 0 0 rgba(251,113,133,.4)}50%{box-shadow:0 0 0 10px rgba(251,113,133,0)}}
+.dict-bar .rec-btn svg{width:18px;height:18px}
+
+/* ─── Context Panel ─── */
+.ctx-toggle{position:absolute;top:50%;right:0;transform:translateY(-50%);width:22px;height:52px;border-radius:10px 0 0 10px;background:var(--glass);backdrop-filter:blur(12px);border:1px solid var(--border);border-right:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text4);font-size:10px;z-index:10;transition:all .15s}
+.ctx-toggle:hover{background:var(--surface2);color:var(--text2)}
+.ctx-panel{position:absolute;top:0;right:0;bottom:0;width:290px;background:var(--glass);backdrop-filter:var(--glass-blur);border-left:1px solid var(--border);transform:translateX(0);transition:transform .25s var(--ease);display:flex;flex-direction:column;z-index:20}
+.ctx-panel.closed{transform:translateX(100%)}
+.ctx-hd{padding:16px 18px 12px;font-size:10px;font-weight:700;color:var(--text4);text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid var(--border)}
+.ctx-scroll{flex:1;overflow-y:auto;padding:14px 16px}
+.ctx-section{margin-bottom:16px}
+.ctx-section-title{font-size:10px;font-weight:600;color:var(--text4);margin-bottom:8px;display:flex;align-items:center;gap:6px}
+.ctx-section-title .dot{width:5px;height:5px;border-radius:50%;background:var(--accent)}
+.ctx-chips{display:flex;flex-wrap:wrap;gap:5px}
+.ctx-chip{padding:5px 12px;border-radius:16px;font-size:11px;background:var(--surface);color:var(--text3);border:1px solid var(--border);cursor:pointer;transition:all .12s var(--ease);user-select:none}
+.ctx-chip:hover{background:var(--accent-dim);color:var(--accent);border-color:var(--accent);transform:translateY(-1px);box-shadow:0 2px 8px var(--accent-dim)}
+.ctx-chip:active{transform:translateY(0) scale(.96);background:var(--accent);color:#fff}
+.ctx-pre{padding:8px 12px;border-radius:8px;font-size:11.5px;color:var(--text3);background:var(--amber-dim);border:1px solid rgba(251,191,36,.08);cursor:pointer;margin-bottom:5px;transition:all .12s var(--ease);line-height:1.6;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.ctx-pre:hover{background:rgba(251,191,36,.15);border-color:rgba(251,191,36,.2);color:var(--amber);transform:translateX(3px)}
+.ctx-pre:active{transform:translateX(0);background:var(--amber);color:#fff}
+.ctx-add{margin-top:10px;width:100%;padding:7px;border-radius:8px;font-size:10px;color:var(--text4);border:1px dashed var(--border);background:transparent;cursor:pointer;text-align:center;transition:all .15s}
+.ctx-add:hover{color:var(--amber);border-color:rgba(251,191,36,.3)}
+
+/* ─── Status Bar ─── */
+.statusbar{display:flex;align-items:center;padding:6px 24px;gap:14px;background:var(--glass);backdrop-filter:var(--glass-blur);border-top:1px solid var(--border);font-size:10.5px;color:var(--text4)}
+.statusbar .live{display:flex;align-items:center;gap:6px}
+.statusbar .live-dot{width:6px;height:6px;border-radius:50%;background:var(--emerald);animation:blink 2s infinite;box-shadow:0 0 4px var(--emerald)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.statusbar .sep{width:1px;height:12px;background:var(--border)}
+.statusbar .right{margin-left:auto;display:flex;align-items:center;gap:14px}
+.statusbar .field-ind{color:var(--accent);font-weight:600}
+.statusbar kbd{padding:2px 6px;border-radius:4px;font-family:var(--font-mono);font-size:9px;background:var(--surface);border:1px solid var(--border);color:var(--text4)}
+
+/* ─── Toast ─── */
+.toast{position:fixed;top:24px;right:24px;padding:12px 20px;border-radius:10px;background:var(--glass);backdrop-filter:var(--glass-blur);border:1px solid var(--border2);color:var(--text);font-size:12px;font-weight:500;z-index:999;animation:toastIn .3s var(--ease-spring);box-shadow:var(--shadow)}
+@keyframes toastIn{from{opacity:0;transform:translateY(-12px) scale(.95)}to{opacity:1;transform:translateY(0) scale(1)}}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:3px}::-webkit-scrollbar-thumb:hover{background:var(--text4)}
+
+/* ─── QA Panel ─── */
+.qa-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);backdrop-filter:blur(6px);z-index:200;opacity:0;pointer-events:none;transition:opacity .25s var(--ease)}
+.qa-overlay.open{opacity:1;pointer-events:auto}
+.qa-drawer{position:fixed;top:0;right:0;bottom:0;width:440px;max-width:92vw;background:var(--glass);backdrop-filter:var(--glass-blur);border-left:1px solid var(--border);z-index:201;transform:translateX(100%);transition:transform .3s var(--ease);display:flex;flex-direction:column;box-shadow:-8px 0 40px rgba(0,0,0,.2)}
+.qa-overlay.open .qa-drawer{transform:translateX(0)}
+.qa-header{padding:18px 22px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px}
+.qa-header h3{font-size:15px;font-weight:700;color:var(--text);margin:0;flex:1}
+.qa-header .qa-close{width:30px;height:30px;border-radius:8px;border:1px solid var(--border);background:var(--surface);color:var(--text3);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .15s}
+.qa-header .qa-close:hover{background:var(--surface2);color:var(--text)}
+.qa-messages{flex:1;overflow-y:auto;padding:18px 22px;display:flex;flex-direction:column;gap:14px}
+.qa-msg{padding:12px 16px;border-radius:12px;font-size:13px;line-height:1.8;max-width:92%;animation:msgIn .2s var(--ease)}
+@keyframes msgIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.qa-msg.user{align-self:flex-end;background:var(--accent);color:#fff;border:none;box-shadow:0 2px 12px var(--accent-glow)}
+.qa-msg.bot{align-self:flex-start;background:var(--surface);color:var(--text2);border:1px solid var(--border)}
+.qa-msg.bot .qa-field{color:var(--accent);font-weight:600}
+.qa-msg.loading{align-self:flex-start;background:var(--surface);color:var(--text4);border:1px solid var(--border);font-style:italic}
+.qa-input-area{padding:14px 18px;border-top:1px solid var(--border);display:flex;gap:10px}
+.qa-input{flex:1;padding:11px 16px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;outline:none;transition:all .15s}
+.qa-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+.qa-input::placeholder{color:var(--text4)}
+.qa-send{padding:11px 18px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-size:12px;font-weight:700;cursor:pointer;transition:all .15s;white-space:nowrap;box-shadow:0 2px 8px var(--accent-glow)}
+.qa-send:hover{background:var(--accent2);transform:translateY(-1px)}
+.qa-send:active{transform:translateY(0)}
+.qa-suggestions{padding:10px 18px 14px;display:flex;flex-wrap:wrap;gap:6px}
+.qa-sug{padding:5px 12px;border-radius:14px;font-size:11px;background:var(--surface);color:var(--text3);border:1px solid var(--border);cursor:pointer;transition:all .12s}
+.qa-sug:hover{background:var(--accent-dim);color:var(--accent);border-color:var(--accent)}
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+<div class="app">
+  <header class="topbar">
+    <div class="brand"><div class="brand-mark">星</div><span class="brand-name">星衍AI</span><span class="brand-ver">v2.0</span></div>
+    <span class="conn-dot" id="connDot"></span>
+    <select id="deptSelect"></select>
+    <select id="tplSelect" style="min-width:150px"></select>
+    <div class="spacer"></div>
+    <button class="theme-toggle" id="themeToggle" title="切换主题">🌙</button>
+    <button class="act" id="btnSidebar">☰</button>
+    <button class="act" id="btnQA">💡 问答</button>
+    <button class="act primary" id="btnSave">💾 保存</button>
+  </header>
+
+  <div class="main" id="mainGrid">
+    <aside class="sidebar">
+      <div class="sidebar-hd">病历模板</div>
+      <div class="sidebar-list" id="sidebarList"></div>
+    </aside>
+    <div class="editor-zone">
+      <nav class="field-nav" id="fieldNav"></nav>
+      <div class="editor-scroll">
+        <div class="editor" id="editor" contenteditable="true" spellcheck="false"></div>
+      </div>
+      <div class="dict-bar" id="dictBar">
+        <div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <span class="label" id="dictLabel">按 F5 开始语音录入</span>
+        <span class="time" id="dictTime"></span>
+        <button class="rec-btn idle" id="recBtn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+      </div>
+      <div class="ctx-toggle" id="ctxToggle">◀</div>
+      <div class="ctx-panel" id="ctxPanel">
+        <div class="ctx-hd" id="ctxHd">常用词</div>
+        <div class="ctx-scroll" id="ctxScroll"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="statusbar">
+    <div class="live"><span class="live-dot" id="liveDot"></span><span id="stModel">连接中…</span></div>
+    <span class="sep"></span><span id="stHotwords">热词 —</span>
+    <span class="sep"></span><span id="stKG">图谱 —</span>
+    <span class="sep"></span><span id="stDrug">说明书 —</span>
+    <div class="right">
+      <span>字段：<span class="field-ind" id="stField">主诉</span></span>
+      <span><kbd>F5</kbd> 录音</span><span><kbd>⌘S</kbd> 保存</span>
+    </div>
+  </footer>
+
+  <!-- QA 问答面板 -->
+  <div class="qa-overlay" id="qaOverlay">
+    <div class="qa-drawer">
+      <div class="qa-header">
+        <h3>💡 医学知识问答</h3>
+        <button class="qa-close" id="qaClose">✕</button>
+      </div>
+      <div class="qa-messages" id="qaMessages">
+        <div class="qa-msg bot">你好！我是星衍医学知识助手，可以回答疾病、药物、检查等相关问题。<br><br>试试问我：<br>• 高血压的常用药物<br>• 糖尿病需要做哪些检查<br>• 阿莫西林的禁忌症</div>
+      </div>
+      <div class="qa-suggestions" id="qaSuggestions">
+        <span class="qa-sug">高血压治疗方案</span>
+        <span class="qa-sug">糖尿病检查项目</span>
+        <span class="qa-sug">阿莫西林说明书</span>
+        <span class="qa-sug">冠心病鉴别诊断</span>
+      </div>
+      <div class="qa-input-area">
+        <input class="qa-input" id="qaInput" placeholder="输入医学问题，回车发送…" autocomplete="off">
+        <button class="qa-send" id="qaSend">发送</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════
+// 星衍AI 前端 — 完整交互逻辑
+// ═══════════════════════════════════════════════════════════
+const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
+const API=location.origin;
+const FIELDS=['主诉','现病史','既往史','个人史','婚育史','家族史','体格检查','辅助检查','初步诊断','诊疗计划'];
+let currentDept='内科', currentField='主诉', currentTpl='', recordId=null;
+let currentBaseContent='';
+let ws=null, mediaStream=null, audioCtx=null, workletNode=null;
+let isRecording=false, recSeconds=0, recTimer=null;
+
+// ─── Theme Toggle ───
+function initTheme(){
+  const saved=localStorage.getItem('xy-theme')||'dark';
+  document.documentElement.setAttribute('data-theme',saved);
+  updateThemeIcon(saved);
+}
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute('data-theme');
+  const next=cur==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme',next);
+  localStorage.setItem('xy-theme',next);
+  updateThemeIcon(next);
+}
+function updateThemeIcon(t){$('#themeToggle').textContent=t==='dark'?'🌙':'️'}
+
+// ─── Init ───
+document.addEventListener('DOMContentLoaded',()=>{
+  initTheme();
+  initUI();
+  connectWS();
+  loadStats();
+  loadDepartments();
+  loadTemplates();
+  loadFieldNav();
+  loadContextPanel();
+});
+
+function initUI(){
+  $('#themeToggle').onclick=toggleTheme;
+  $('#btnSidebar').onclick=()=>$('#mainGrid').classList.toggle('collapsed');
+  $('#ctxToggle').onclick=()=>{const p=$('#ctxPanel');p.classList.toggle('closed');$('#ctxToggle').textContent=p.classList.contains('closed')?'◀':'▶'};
+  $('#recBtn').onclick=toggleRecording;
+  $('#btnSave').onclick=saveRecord;
+  $('#btnQA').onclick=()=>{$('#qaOverlay').classList.add('open');$('#qaInput').focus()};
+  $('#qaClose').onclick=()=>$('#qaOverlay').classList.remove('open');
+  $('#qaOverlay').onclick=(e)=>{if(e.target===$('#qaOverlay'))$('#qaOverlay').classList.remove('open')};
+  $('#qaSend').onclick=sendQA;
+  $('#qaInput').onkeydown=(e)=>{if(e.key==='Enter'){e.preventDefault();sendQA()}};
+  $$('.qa-sug').forEach(s=>{s.onclick=()=>{$('#qaInput').value=s.textContent;sendQA()}});
+  $('#deptSelect').onchange=function(){currentDept=this.value;loadTemplates()};
+  $('#tplSelect').onchange=function(){loadTemplateContent(this.value)};
+  document.addEventListener('keydown',e=>{
+    if(e.key==='F5'){e.preventDefault();toggleRecording()}
+    if((e.metaKey||e.ctrlKey)&&e.key==='s'){e.preventDefault();saveRecord()}
+  });
+  const ed=$('#editor');
+  ed.addEventListener('focus',function once(){
+    ed.querySelectorAll('.val.empty').forEach(el=>{el.onclick=function(){if(this.classList.contains('empty')){this.textContent='';this.classList.remove('empty')}}});
+    ed.removeEventListener('focus',once);
+  });
+}
+
+// ─── WebSocket ASR ───
+function connectWS(){
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  ws=new WebSocket(`${proto}//${location.host}/ws/asr`);
+  ws.onopen=()=>{$('#connDot').className='conn-dot ok';$('#stModel').textContent='模型就绪';$('#liveDot').style.background='var(--emerald)'};
+  ws.onclose=()=>{$('#connDot').className='conn-dot err';$('#stModel').textContent='已断开';$('#liveDot').style.background='var(--rose)';setTimeout(connectWS,3000)};
+  ws.onerror=()=>{};
+  ws.onmessage=(e)=>{
+    const d=JSON.parse(e.data);
+    if(d.type==='result'&&d.text){fillAndSet(d.text)}
+    else if(d.type==='partial'){$('#dictLabel').textContent='识别中：'+d.text.slice(-30)}
+  };
+}
+
+// ─── Recording ───
+async function toggleRecording(){
+  if(isRecording){stopRecording()}else{await startRecording()}
+}
+async function startRecording(){
+  try{
+    mediaStream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:true,noiseSuppression:true}});
+    audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+    // 使用 AudioWorklet（独立线程，不阻塞UI）
+    await audioCtx.audioWorklet.addModule('/audio-processor.js');
+    const source=audioCtx.createMediaStreamSource(mediaStream);
+    workletNode=new AudioWorkletNode(audioCtx,'pcm-capture-processor',{
+      processorOptions:{targetRate:16000}
+    });
+    // Worklet 线程发来的音频数据 → 转发给 WebSocket
+    workletNode.port.onmessage=(e)=>{
+      if(!isRecording||!ws||ws.readyState!==1)return;
+      if(e.data.type==='audio'){
+        ws.send(e.data.data);  // Transfer ArrayBuffer, zero-copy
+      }
+    };
+    source.connect(workletNode);
+    workletNode.connect(audioCtx.destination);
+    isRecording=true;recSeconds=0;
+    $('#dictBar').classList.add('recording');
+    $('#recBtn').classList.remove('idle');$('#recBtn').classList.add('active');
+    $('#recBtn').innerHTML='<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+    $('#dictLabel').textContent='正在聆听 · '+currentField;
+    recTimer=setInterval(()=>{recSeconds++;const m=String(Math.floor(recSeconds/60)).padStart(2,'0'),s=String(recSeconds%60).padStart(2,'0');$('#dictTime').textContent=m+':'+s},1000);
+  }catch(err){console.error('[Recording]',err);toast('录音启动失败：'+err.message)}
+}
+function stopRecording(){
+  isRecording=false;
+  if(workletNode){workletNode.disconnect();workletNode=null}
+  if(audioCtx){audioCtx.close();audioCtx=null}
+  if(mediaStream){mediaStream.getTracks().forEach(t=>t.stop());mediaStream=null}
+  clearInterval(recTimer);
+  if(ws&&ws.readyState===1)ws.send(JSON.stringify({cmd:'stop'}));
+  $('#dictBar').classList.remove('recording');
+  $('#recBtn').classList.remove('active');$('#recBtn').classList.add('idle');
+  $('#recBtn').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
+  $('#dictLabel').textContent='按 F5 开始语音录入';$('#dictTime').textContent='';
+}
+
+// ─── API Calls ───
+async function loadStats(){
+  try{const r=await fetch(API+'/api/stats');const d=await r.json();$('#stHotwords').textContent='热词 '+d.hotwords;$('#stKG').textContent='图谱 '+d.kg_entities;$('#stDrug').textContent='说明书 '+d.drug_inserts}catch(e){}
+}
+async function loadDepartments(){
+  try{const r=await fetch(API+'/api/departments');const depts=await r.json();$('#deptSelect').innerHTML=depts.map(d=>`<option${d===currentDept?' selected':''}>${d}</option>`).join('')}catch(e){}
+}
+async function loadTemplates(){
+  try{
+    const r=await fetch(API+'/api/templates?dept='+encodeURIComponent(currentDept));
+    const tpls=await r.json();
+    $('#tplSelect').innerHTML=tpls.map(t=>`<option>${t.name}</option>`).join('');
+    const icons=['📋','','📄','','','🔄','',''];
+    let html='';
+    tpls.forEach((t,i)=>{
+      const isCommon=t.name.includes('常见病')||t.name.includes('【');
+      const ico=isCommon?'❤️':(icons[i]||'📄');
+      const tag=isCommon?'<span class="tag">常见</span>':'';
+      const name=t.name.replace(/【常见病】/,'');
+      html+=`<div class="sidebar-item${i===0?' active':''}" data-tpl="${t.name}"><span class="ico">${ico}</span>${name}${tag}</div>`;
+      if(i===7&&!isCommon)html+='<div class="sidebar-sep"></div>';
+    });
+    $('#sidebarList').innerHTML=html;
+    $$('.sidebar-item').forEach(el=>{el.onclick=()=>{$$('.sidebar-item').forEach(x=>x.classList.remove('active'));el.classList.add('active');loadTemplateContent(el.dataset.tpl)}});
+    if(tpls.length)loadTemplateContent(tpls[0].name);
+  }catch(e){console.error(e)}
+}
+async function loadTemplateContent(name){
+  currentTpl=name;
+  try{
+    const r=await fetch(API+'/api/templates/'+encodeURIComponent(currentDept)+'/'+encodeURIComponent(name));
+    const d=await r.json();
+    if(d.content){currentBaseContent=d.content;setEditorContent(d.content)}
+  }catch(e){}
+}
+async function loadFieldNav(){
+  $('#fieldNav').innerHTML=FIELDS.map(f=>`<span class="field-pill${f===currentField?' active':''}" data-f="${f}">${f}</span>`).join('');
+  $$('.field-pill').forEach(p=>{p.onclick=()=>{$$('.field-pill').forEach(x=>x.classList.remove('active'));p.classList.add('active');currentField=p.dataset.f;$('#stField').textContent=currentField;highlightField(currentField);loadContextPanel()}});
+}
+async function loadContextPanel(){
+  try{
+    const [wr,pr]=await Promise.all([fetch(API+'/api/field-words/'+encodeURIComponent(currentField)),fetch(API+'/api/presets/'+encodeURIComponent(currentField))]);
+    const wd=await wr.json(),pd=await pr.json();
+    $('#ctxHd').textContent='常用词 · '+currentField;
+    let html='';
+    (wd.sections||[]).forEach(sec=>{html+=`<div class="ctx-section"><div class="ctx-section-title"><span class="dot"></span>${sec.title}</div><div class="ctx-chips">${sec.words.map(w=>`<span class="ctx-chip" data-w="${w}">${w}</span>`).join('')}</div></div>`});
+    html+='<div class="ctx-section"><div class="ctx-section-title" style="color:var(--amber)">📝 常用句</div>';
+    if(pd.presets&&pd.presets.length){pd.presets.forEach(p=>{html+=`<div class="ctx-pre" data-p="${p.replace(/"/g,'&quot;')}">${p}</div>`})}
+    html+='<button class="ctx-add" id="ctxAddBtn">＋ 添加常用句</button></div>';
+    $('#ctxScroll').innerHTML=html;
+    $$('.ctx-chip').forEach(c=>{c.onclick=()=>{c.style.background='var(--accent)';c.style.color='#fff';setTimeout(()=>{c.style.background='';c.style.color=''},200);insertText(c.dataset.w)}});
+    $$('.ctx-pre').forEach(p=>{p.onclick=()=>{p.style.background='var(--amber)';p.style.color='#fff';setTimeout(()=>{p.style.background='';p.style.color=''},250);insertText(p.dataset.p)}});
+    const addBtn=$('#ctxAddBtn');
+    if(addBtn)addBtn.onclick=async()=>{const s=prompt('输入常用句：');if(s&&s.trim()){try{await fetch(API+'/api/presets/'+encodeURIComponent(currentField),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sentence:s.trim()})});toast('✅ 已添加');loadContextPanel()}catch(e){toast('添加失败：'+e.message)}}};
+  }catch(e){console.error('[ContextPanel]',e)}
+}
+async function saveRecord(){
+  const content=$('#editor').innerText.trim();
+  if(!content){toast('没有内容可保存');return}
+  try{
+    const r=await fetch(API+'/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content,department:currentDept,id:recordId})});
+    const d=await r.json();if(d.ok){recordId=d.id;toast('💾 已保存')}else{toast('保存失败')}
+  }catch(e){toast('保存失败：'+e.message)}
+}
+async function sendQA(){
+  const input=$('#qaInput');
+  const q=input.value.trim();
+  if(!q)return;
+  input.value='';
+  const msgs=$('#qaMessages');
+  msgs.innerHTML+=`<div class="qa-msg user">${escHtml(q)}</div>`;
+  msgs.innerHTML+=`<div class="qa-msg loading" id="qaLoading">思考中…</div>`;
+  msgs.scrollTop=msgs.scrollHeight;
+  try{
+    const r=await fetch(API+'/api/kg/query?q='+encodeURIComponent(q));
+    const d=await r.json();
+    const loading=$('#qaLoading');if(loading)loading.remove();
+    window._lastDrugDetails=d.drug_details||[];
+    const text=d.text||'未找到相关信息';
+    const formatted=formatQAText(text, d.drug_details||[]);
+    let botHtml=`<div class="qa-msg bot">${formatted}`;
+    if(d.drug_details&&d.drug_details.length){
+      botHtml+=`<div style="margin-top:12px;border-top:1px solid var(--border);padding-top:10px">`;
+      botHtml+=`<div style="font-size:11px;color:var(--amber);font-weight:700;margin-bottom:8px">💊 药物说明书</div>`;
+      d.drug_details.forEach(drug=>{
+        botHtml+=`<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:12px;line-height:1.7">`;
+        botHtml+=`<div style="color:var(--accent);font-weight:700;margin-bottom:4px">${escHtml(drug.name)}</div>`;
+        if(drug.indication) botHtml+=`<div><span style="color:var(--emerald)">适应症：</span>${escHtml(drug.indication)}</div>`;
+        if(drug.dosage) botHtml+=`<div><span style="color:var(--text3)">用法用量：</span>${escHtml(drug.dosage)}</div>`;
+        if(drug.contraindication) botHtml+=`<div><span style="color:var(--rose)">禁忌：</span>${escHtml(drug.contraindication)}</div>`;
+        if(drug.adverse) botHtml+=`<div><span style="color:var(--amber)">不良反应：</span>${escHtml(drug.adverse)}</div>`;
+        botHtml+=`</div>`;
+      });
+      botHtml+=`</div>`;
+    }
+    botHtml+=`</div>`;
+    msgs.innerHTML+=botHtml;
+    if(d.suggestions&&d.suggestions.length){
+      $('#qaSuggestions').innerHTML=d.suggestions.slice(0,4).map(s=>`<span class="qa-sug" onclick="$('#qaInput').value='${s.replace(/'/g,"\\'")}';sendQA()">${s}</span>`).join('');
+    }
+  }catch(e){
+    const loading=$('#qaLoading');if(loading)loading.remove();
+    msgs.innerHTML+=`<div class="qa-msg bot" style="color:var(--rose)">网络错误，请重试</div>`;
+  }
+  msgs.scrollTop=msgs.scrollHeight;
+}
+function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function formatQAText(text, drugDetails){
+  let h=escHtml(text);
+  h=h.replace(/\n/g,'<br>');
+  h=h.replace(/([▪•·]\s*[^：:]+[：:])/g,'<span class="qa-field">$1</span>');
+  if(drugDetails&&drugDetails.length){
+    const sorted=[...drugDetails].sort((a,b)=>b.name.length-a.name.length);
+    sorted.forEach(drug=>{
+      const escaped=escHtml(drug.name);
+      const idx=drugDetails.indexOf(drug);
+      const re=new RegExp(escaped.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'g');
+      h=h.replace(re,`<a href="javascript:void(0)" class="drug-link" data-drug-idx="${idx}" style="color:var(--accent);text-decoration:underline;cursor:pointer;font-weight:600">${escaped} 💊</a>`);
+    });
+  }
+  return h;
+}
+function showDrugPopup(idx){
+  const drug=window._lastDrugDetails&&window._lastDrugDetails[idx];
+  if(!drug)return;
+  let html=`<div style="position:fixed;inset:0;background:rgba(0,0,0,.5);backdrop-filter:blur(6px);z-index:300;display:flex;align-items:center;justify-content:center" onclick="if(event.target===this)this.remove()">`;
+  html+=`<div style="background:var(--bg2);backdrop-filter:var(--glass-blur);border:1px solid var(--border);border-radius:16px;padding:28px;max-width:500px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 24px 64px rgba(0,0,0,.4)">`;
+  html+=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px">`;
+  html+=`<h3 style="color:var(--accent);font-size:17px;margin:0;font-weight:700">💊 ${escHtml(drug.name)}</h3>`;
+  html+=`<button onclick="this.closest('div[style*=fixed]').remove()" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;width:28px;height:28px;color:var(--text3);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center">✕</button></div>`;
+  if(drug.indication) html+=`<div style="margin-bottom:14px"><div style="color:var(--emerald);font-weight:700;font-size:12px;margin-bottom:5px">🎯 适应症</div><div style="color:var(--text2);font-size:13px;line-height:1.8">${escHtml(drug.indication)}</div></div>`;
+  if(drug.dosage) html+=`<div style="margin-bottom:14px"><div style="color:var(--text3);font-weight:700;font-size:12px;margin-bottom:5px">📋 用法用量</div><div style="color:var(--text2);font-size:13px;line-height:1.8">${escHtml(drug.dosage)}</div></div>`;
+  if(drug.contraindication) html+=`<div style="margin-bottom:14px"><div style="color:var(--rose);font-weight:700;font-size:12px;margin-bottom:5px">🚫 禁忌</div><div style="color:var(--text2);font-size:13px;line-height:1.8">${escHtml(drug.contraindication)}</div></div>`;
+  if(drug.adverse) html+=`<div style="margin-bottom:14px"><div style="color:var(--amber);font-weight:700;font-size:12px;margin-bottom:5px">⚠️ 不良反应</div><div style="color:var(--text2);font-size:13px;line-height:1.8">${escHtml(drug.adverse)}</div></div>`;
+  html+=`</div></div>`;
+  document.body.insertAdjacentHTML('beforeend',html);
+}
+document.addEventListener('click',function(e){
+  const link=e.target.closest('.drug-link');
+  if(link){e.preventDefault();showDrugPopup(parseInt(link.dataset.drugIdx))}
+});
+
+// ─── Editor Helpers ───
+function setEditorContent(text){
+  const fields=['姓名','性别','年龄','民族','婚姻状况','出生地','职业','入院时间','入院方式','病史陈述者','可靠程度','主诉','现病史','既往史','个人史','婚育史','家族史','体格检查','辅助检查','初步诊断','鉴别诊断','诊疗计划','诊疗经过','出院情况','出院医嘱'];
+  let html=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  fields.forEach(f=>{const re=new RegExp('('+f.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[：:])','g');html=html.replace(re,`<span class="fl">$1</span>`)});
+  html=html.replace(/\n/g,'<br>');
+  $('#editor').innerHTML=html;
+  highlightField(currentField);
+}
+async function fillAndSet(asrText){
+  try{
+    const r=await fetch(API+'/api/fill',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text:asrText, base:currentBaseContent, department:currentDept})
+    });
+    const d=await r.json();
+    if(d.filled){
+      currentBaseContent=d.filled;
+      setEditorContent(d.filled);
+    }else{
+      insertText(asrText+'\n');
+    }
+  }catch(e){
+    insertText(asrText+'\n');
+  }
+}
+function insertText(text){
+  const ed=$('#editor');ed.focus();
+  const sel=window.getSelection();
+  if(sel.rangeCount){const r=sel.getRangeAt(0);r.deleteContents();const n=document.createTextNode(text);r.insertNode(n);r.setStartAfter(n);r.collapse(true);sel.removeAllRanges();sel.addRange(r)}
+  else{ed.innerText+=text}
+}
+function highlightField(name){$$('.editor .fl').forEach(fl=>{fl.classList.toggle('active',fl.textContent.startsWith(name))})}
+
+// ─── Toast ───
+function toast(msg){const el=document.createElement('div');el.className='toast';el.textContent=msg;document.body.appendChild(el);setTimeout(()=>el.remove(),3000)}
+</script>
+</body>
+</html>

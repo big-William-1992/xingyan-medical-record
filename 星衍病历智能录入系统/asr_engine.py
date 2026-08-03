@@ -165,7 +165,6 @@ class ASREngine:
         """根据科室设置热词（通用 + 科室专用），生成热词文件供模型使用"""
         # 科室名 → 热词分区名映射
         dept_map = {
-            "影像科": "影像科专用",
             "内科": "内科专用",
             "外科": "外科专用",
             "妇产科": "妇产科专用",
@@ -318,6 +317,7 @@ class ASREngine:
             return {}
 
         pair_counter = Counter()
+        manual_counter = Counter()  # 手动修正单独计数（阈值更低）
         try:
             with open(feedback_path, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -334,13 +334,17 @@ class ASREngine:
                     orig = rec.get("original", "").strip()
                     corr = rec.get("corrected", "").strip()
                     if orig and corr and orig != corr and len(orig) <= 10:
-                        pair_counter[(orig, corr)] += 1
+                        if rec.get("source") == "user_manual" or rec.get("type") == "manual_edit":
+                            manual_counter[(orig, corr)] += 1
+                        else:
+                            pair_counter[(orig, corr)] += 1
         except Exception as e:
             print(f"[Extract] 读取反馈失败: {e}")
             return {}
 
-        # 筛选高频对
+        # 筛选高频对（自动纠错≥3次，手动修正≥1次即入表）
         pairs = {orig: corr for (orig, corr), cnt in pair_counter.items() if cnt >= min_count}
+        pairs.update({orig: corr for (orig, corr), cnt in manual_counter.items() if cnt >= 1})
 
         # 合并已有混淆对（保留旧的 + 新增）
         existing = {}
@@ -400,11 +404,18 @@ class ASREngine:
     # ─── 模型加载 ─────────────────────────────────────────
 
     def _load_model(self):
-        """加载 Paraformer + VAD + 标点模型"""
+        """加载 Paraformer + VAD + 标点模型（优先使用医学微调权重）"""
         if not HAS_FUNASR:
             print("[ASR] FunASR 未安装")
             return
         try:
+            # 检测医学微调权重（本地微调产物）
+            ft_ckpt = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "finetune_ckpt", "paraformer_medical.pt")
+            extra_kwargs = {}
+            if os.path.exists(ft_ckpt):
+                extra_kwargs["init_param"] = ft_ckpt
+                print("[ASR] 检测到医学微调权重，加载 paraformer_medical.pt")
             print("[ASR] 正在加载 Paraformer + VAD + 标点模型...")
             self.model = AutoModel(
                 model="paraformer-zh",
@@ -413,6 +424,7 @@ class ASREngine:
                 device="cpu",
                 disable_update=True,
                 disable_log=True,
+                **extra_kwargs,
             )
             print("[ASR] 模型加载成功")
         except Exception as e:

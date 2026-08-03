@@ -51,6 +51,11 @@ class KnowledgeQA:
         # 药物词表（用于"XX的说明书"类问题）
         self._drugs = [n for n, t in self.kg.entity_types.items() if t == "药物"]
         self._drugs_by_len = sorted(self._drugs, key=len, reverse=True)
+        # 症状 / 检查词表（用于二级索引）
+        self._symptoms = [n for n, t in self.kg.entity_types.items() if t == "症状"]
+        self._symptoms_by_len = sorted(self._symptoms, key=len, reverse=True)
+        self._exams = [n for n, t in self.kg.entity_types.items() if t == "检查"]
+        self._exams_by_len = sorted(self._exams, key=len, reverse=True)
 
     # ─── 实体识别 ───────────────────────────────────────
     def find_disease(self, question):
@@ -156,6 +161,34 @@ class KnowledgeQA:
         return handler(disease, intent)
 
     # ─── 各类回答 ───────────────────────────────────────
+    def _drug_brief(self, drug_name):
+        """生成药物一句话解释（适应症摘要）"""
+        ins = self.kg.get_drug_info(drug_name)
+        if not ins:
+            return ""
+        indication = ins.get("适应症", "")
+        if indication:
+            # 截取前60字作为摘要
+            brief = indication.replace("\n", " ").strip()
+            return brief[:60] + ("..." if len(brief) > 60 else "")
+        return ""
+    
+    def _exam_brief(self, exam_name):
+        """生成检查一句话解释（关联疾病数）"""
+        related = self.kg.query_by_obj(exam_name, "HAS_EXAM")[:5]
+        if related:
+            return "相关疾病：%s等" % "、".join(related[:3])
+        return ""
+    
+    def _symptom_brief(self, symptom_name):
+        """生成症状一句话解释（可能指向的疾病）"""
+        diseases = self.kg.query_by_subj(symptom_name, "INDICATES")[:5]
+        if not diseases:
+            diseases = self.kg.query_by_obj(symptom_name, "HAS_SYMPTOM")[:5]
+        if diseases:
+            return "可见于：%s等" % "、".join(diseases[:3])
+        return ""
+    
     def _answer_treatment(self, disease, intent="治疗"):
         info = self.kg.entities.get(disease, {})
         drugs = self.kg.get_drugs_for_disease(disease)
@@ -164,20 +197,19 @@ class KnowledgeQA:
         if cure_way:
             lines.append("▪ 治疗方式：%s" % "、".join(cure_way))
         if drugs:
-            lines.append("▪ 常用药物：%s" % "、".join(drugs))
-            # 附带前 3 个药的说明书要点
-            inserts = [d for d in drugs if d in self.kg.drug_inserts][:3]
-            for d in inserts:
-                ins = self.kg.drug_inserts[d]
-                if ins.get("用法用量"):
-                    lines.append("   - %s：%s" % (d, ins["用法用量"]))
+            lines.append("▪ 常用药物：")
+            for i, d in enumerate(drugs[:8], 1):
+                brief = self._drug_brief(d)
+                lines.append("   %d. %s" % (i, d))
+                if brief:
+                    lines.append("      └ %s" % brief)
         # 中医治法方药
         syndromes = self.kg.get_syndromes_for_disease(disease)
         if syndromes:
             lines.append("▪ 中医辨证：%s" % "、".join(syndromes))
             tr = self.kg.get_treatment_for_syndrome(syndromes[0])
             if tr.get("治法"):
-                lines.append("   - 治法：%s　代表方：%s" % (
+                lines.append("   - 治法：%s 代表方：%s" % (
                     tr["治法"], tr.get("代表方", "")))
         cv = self.kg.get_critical_value(disease)
         if cv:
@@ -196,6 +228,9 @@ class KnowledgeQA:
                 cat = self.kg.entities.get(d, {}).get("类别", "")
                 suffix = "（%s）" % cat if cat else ""
                 lines.append("%d. %s%s" % (i, d, suffix))
+                brief = self._drug_brief(d)
+                if brief:
+                    lines.append("   └ %s" % brief)
         else:
             lines.append("（知识库暂无该病的用药记录）")
         lines.extend(["", "⚕ " + DISCLAIMER])
@@ -205,7 +240,14 @@ class KnowledgeQA:
     def _answer_exams(self, disease, intent="检查"):
         exams = self.kg.get_exams_for_disease(disease)
         lines = ["🔬 【%s】建议检查" % disease, ""]
-        lines.append("、".join(exams) if exams else "（知识库暂无该病的检查记录）")
+        if exams:
+            for i, e in enumerate(exams, 1):
+                lines.append("%d. %s" % (i, e))
+                brief = self._exam_brief(e)
+                if brief:
+                    lines.append("   └ %s" % brief)
+        else:
+            lines.append("（知识库暂无该病的检查记录）")
         lines.extend(["", "⚕ " + DISCLAIMER])
         return {"found": True, "disease": disease, "intent": intent,
                 "text": "\n".join(lines), "suggestions": self._related(disease)}
@@ -213,7 +255,14 @@ class KnowledgeQA:
     def _answer_symptoms(self, disease, intent="症状"):
         symptoms = self.kg.get_symptoms_for_disease(disease)
         lines = ["📋 【%s】常见症状" % disease, ""]
-        lines.append("、".join(symptoms) if symptoms else "（知识库暂无该病的症状记录）")
+        if symptoms:
+            for i, s in enumerate(symptoms, 1):
+                lines.append("%d. %s" % (i, s))
+                brief = self._symptom_brief(s)
+                if brief:
+                    lines.append("   └ %s" % brief)
+        else:
+            lines.append("（知识库暂无该病的症状记录）")
         lines.extend(["", "⚕ " + DISCLAIMER])
         return {"found": True, "disease": disease, "intent": intent,
                 "text": "\n".join(lines), "suggestions": self._related(disease)}

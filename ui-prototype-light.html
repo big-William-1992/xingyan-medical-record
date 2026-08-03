@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI病历录入 — 明亮版原型</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700;900&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-page: #f4f7fb;
+  --bg-white: #ffffff;
+  --bg-subtle: #f0f4f8;
+  --bg-hover: #e8eef5;
+  --border: #e2e8f0;
+  --border-light: #edf2f7;
+  --accent: #0077b6;
+  --accent-light: #e6f4ff;
+  --accent-hover: #005f8a;
+  --teal: #0d9488;
+  --teal-light: #e6fffa;
+  --warm: #d97706;
+  --warm-light: #fffbeb;
+  --success: #059669;
+  --success-light: #ecfdf5;
+  --danger: #dc2626;
+  --danger-light: #fef2f2;
+  --purple: #7c3aed;
+  --purple-light: #f5f3ff;
+  --text-heading: #1a202c;
+  --text-body: #374151;
+  --text-secondary: #6b7280;
+  --text-muted: #9ca3af;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.04);
+  --shadow-lg: 0 10px 30px rgba(0,0,0,0.08), 0 4px 8px rgba(0,0,0,0.04);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-xs: 6px;
+}
+
+body {
+  font-family: 'Noto Sans SC', 'DM Sans', -apple-system, sans-serif;
+  background: var(--bg-page);
+  color: var(--text-body);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── 顶部栏 ─── */
+.topbar {
+  display: flex;
+  align-items: center;
+  padding: 10px 20px;
+  background: var(--bg-white);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  gap: 14px;
+  z-index: 100;
+}
+
+.topbar .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 12px;
+}
+.topbar .brand-icon {
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, var(--accent), var(--teal));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-size: 16px;
+  font-weight: 700;
+}
+.topbar .brand-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text-heading);
+  letter-spacing: -0.3px;
+}
+
+.topbar select {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-size: 13px;
+  color: var(--text-body);
+  background: var(--bg-white);
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.topbar select:hover { border-color: var(--accent); }
+.topbar select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-light); }
+
+.topbar .spacer { flex: 1; }
+
+.topbar .action-btn {
+  padding: 6px 14px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border);
+  background: var(--bg-white);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+.topbar .action-btn:hover {
+  background: var(--bg-subtle);
+  color: var(--text-heading);
+  border-color: var(--accent);
+}
+.topbar .action-btn.save {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.topbar .action-btn.save:hover {
+  background: var(--accent-hover);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+
+/* ─── 主布局 ─── */
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 210px 1fr 300px;
+  overflow: hidden;
+}
+
+/* ─── 左侧 ─── */
+.sidebar {
+  background: var(--bg-white);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 16px 16px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+}
+
+.sidebar-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.sidebar-item {
+  padding: 9px 12px;
+  border-radius: var(--radius-xs);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-item:hover {
+  background: var(--bg-subtle);
+  color: var(--text-heading);
+}
+.sidebar-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+  font-weight: 600;
+}
+.sidebar-item .icon { font-size: 14px; opacity: 0.7; }
+.sidebar-item .tag {
+  margin-left: auto;
+  font-size: 9px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--warm-light);
+  color: var(--warm);
+  font-weight: 600;
+}
+
+.sidebar-divider {
+  height: 1px;
+  background: var(--border-light);
+  margin: 8px 12px;
+}
+
+/* ─── 中间 ─── */
+.editor-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+  background: var(--bg-page);
+}
+
+.editor-container {
+  flex: 1;
+  margin: 16px;
+  background: var(--bg-white);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border-light);
+  overflow-y: auto;
+  padding: 28px 32px;
+}
+
+.editor-container .field-row {
+  margin-bottom: 6px;
+  line-height: 2.2;
+  font-size: 14px;
+}
+.editor-container .label {
+  color: var(--accent);
+  font-weight: 600;
+  position: relative;
+  cursor: pointer;
+  padding: 2px 0;
+  transition: background 0.15s;
+  border-radius: 3px;
+}
+.editor-container .label:hover {
+  background: var(--accent-light);
+  padding: 2px 4px;
+}
+.editor-container .label.active {
+  background: var(--accent-light);
+  padding: 2px 6px;
+  border-bottom: 2px solid var(--accent);
+}
+.editor-container .value {
+  color: var(--text-body);
+}
+.editor-container .value.empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 13px;
+}
+
+.editor-container .section-gap { height: 12px; }
+
+/* 录音浮窗 */
+.voice-float {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-white);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 10px 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-shadow: var(--shadow-lg), 0 0 0 4px rgba(0, 119, 182, 0.08);
+  animation: slide-up 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes slide-up {
+  from { opacity: 0; transform: translateX(-50%) translateY(12px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.voice-float .wave {
+  display: flex;
+  align-items: center;
+  gap: 2.5px;
+  height: 24px;
+}
+.voice-float .wave span {
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  animation: bounce 0.7s ease-in-out infinite alternate;
+}
+.voice-float .wave span:nth-child(1) { height: 6px; animation-delay: 0s; }
+.voice-float .wave span:nth-child(2) { height: 14px; animation-delay: 0.08s; }
+.voice-float .wave span:nth-child(3) { height: 22px; animation-delay: 0.16s; }
+.voice-float .wave span:nth-child(4) { height: 10px; animation-delay: 0.24s; }
+.voice-float .wave span:nth-child(5) { height: 18px; animation-delay: 0.12s; }
+.voice-float .wave span:nth-child(6) { height: 8px; animation-delay: 0.2s; }
+.voice-float .wave span:nth-child(7) { height: 16px; animation-delay: 0.04s; }
+.voice-float .wave span:nth-child(8) { height: 6px; animation-delay: 0.28s; }
+@keyframes bounce {
+  0% { transform: scaleY(0.35); opacity: 0.4; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+
+.voice-float .label-text {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.voice-float .time {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.voice-float .end-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: none;
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.voice-float .end-btn:hover {
+  transform: scale(1.1);
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.3);
+}
+.voice-float .end-btn::after {
+  content: '';
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 10px; height: 10px;
+  background: white;
+  border-radius: 2px;
+}
+
+/* ─── 右侧 ─── */
+.right-sidebar {
+  background: var(--bg-white);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.field-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 12px 12px 8px;
+  gap: 5px;
+  border-bottom: 1px solid var(--border-light);
+}
+.field-tab {
+  padding: 5px 11px;
+  border-radius: 14px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.field-tab:hover {
+  color: var(--text-body);
+  background: var(--bg-subtle);
+}
+.field-tab.active {
+  color: var(--accent);
+  background: var(--accent-light);
+  border-color: rgba(0, 119, 182, 0.2);
+  font-weight: 600;
+}
+
+.right-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.section-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin: 14px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.section-label:first-child { margin-top: 0; }
+.section-label .dot {
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.chip-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+.chip {
+  padding: 5px 11px;
+  border-radius: 14px;
+  font-size: 11px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-light);
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+}
+.chip:hover {
+  background: var(--accent-light);
+  color: var(--accent);
+  border-color: rgba(0, 119, 182, 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 119, 182, 0.1);
+}
+.chip:active {
+  transform: translateY(0);
+  background: var(--accent);
+  color: white;
+}
+
+.presets-area {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-light);
+}
+.presets-header {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--warm);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.preset-card {
+  padding: 8px 12px;
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--warm-light);
+  border: 1px solid rgba(217, 119, 6, 0.1);
+  cursor: pointer;
+  margin-bottom: 5px;
+  transition: all 0.15s;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.preset-card:hover {
+  background: rgba(217, 119, 6, 0.1);
+  border-color: rgba(217, 119, 6, 0.25);
+  color: var(--warm);
+  transform: translateX(2px);
+}
+.preset-card:active {
+  background: var(--warm);
+  color: white;
+  transform: translateX(0);
+}
+
+.add-btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 7px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  background: transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+.add-btn:hover {
+  color: var(--warm);
+  border-color: rgba(217, 119, 6, 0.3);
+  background: var(--warm-light);
+}
+
+/* ─── 底部栏 ─── */
+.bottombar {
+  display: flex;
+  align-items: center;
+  padding: 6px 20px;
+  background: var(--bg-white);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  gap: 18px;
+}
+.bottombar .status-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px var(--success-light);
+  animation: blink 2.5s infinite;
+}
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.bottombar .rec-trigger {
+  margin-left: auto;
+  padding: 4px 14px;
+  border-radius: 14px;
+  background: var(--danger-light);
+  border: 1px solid rgba(220, 38, 38, 0.15);
+  color: var(--danger);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.bottombar .rec-trigger:hover {
+  background: var(--danger);
+  color: white;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.2);
+}
+
+/* ─── 滚动条 ─── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+</style>
+</head>
+<body>
+
+<!-- 顶部栏 -->
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-icon">星</div>
+    <span class="brand-name">星衍AI病历</span>
+  </div>
+  <select>
+    <option>内科</option>
+    <option>外科</option>
+    <option>妇产科</option>
+    <option>儿科</option>
+    <option>全科</option>
+  </select>
+  <select style="min-width: 160px;">
+    <option>入院记录</option>
+    <option>首次病程记录</option>
+    <option>日常病程记录</option>
+    <option>出院记录</option>
+    <option>【常见病】高血压病</option>
+  </select>
+  <div class="spacer"></div>
+  <button class="action-btn">💡 知识问答</button>
+  <button class="action-btn">📝 模板管理</button>
+  <button class="action-btn">🧠 重训模型</button>
+  <button class="action-btn save">💾 保存病历</button>
+</div>
+
+<!-- 主体 -->
+<div class="layout">
+
+  <!-- 左侧模板 -->
+  <div class="sidebar">
+    <div class="sidebar-header">病历模板</div>
+    <div class="sidebar-list">
+      <div class="sidebar-item active"><span class="icon">📋</span> 入院记录</div>
+      <div class="sidebar-item"><span class="icon">📝</span> 首次病程记录</div>
+      <div class="sidebar-item"><span class="icon">📄</span> 首页病程</div>
+      <div class="sidebar-item"><span class="icon">📃</span> 日常病程记录</div>
+      <div class="sidebar-item"><span class="icon">🏥</span> 出院记录</div>
+      <div class="sidebar-item"><span class="icon">🔄</span> 转科记录</div>
+      <div class="sidebar-item"><span class="icon">👥</span> 会诊记录</div>
+      <div class="sidebar-item"><span class="icon">🚨</span> 抢救记录</div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-item"><span class="icon">❤️</span> 高血压病 <span class="tag">常见病</span></div>
+      <div class="sidebar-item"><span class="icon">🩸</span> 2型糖尿病 <span class="tag">常见病</span></div>
+      <div class="sidebar-item"><span class="icon">💓</span> 冠心病 <span class="tag">常见病</span></div>
+      <div class="sidebar-item"><span class="icon">🫁</span> 社区获得性肺炎 <span class="tag">常见病</span></div>
+      <div class="sidebar-item"><span class="icon">🧠</span> 脑梗死 <span class="tag">常见病</span></div>
+      <div class="sidebar-item"><span class="icon">🌬</span> COPD急性加重 <span class="tag">常见病</span></div>
+    </div>
+  </div>
+
+  <!-- 中间编辑区 -->
+  <div class="editor-panel">
+    <div class="editor-container">
+      <div class="field-row">
+        <span class="label">姓名：</span><span class="value">张三</span>&emsp;&emsp;
+        <span class="label">性别：</span><span class="value">男</span>&emsp;&emsp;
+        <span class="label">年龄：</span><span class="value">58岁</span>&emsp;&emsp;
+        <span class="label">民族：</span><span class="value">汉族</span>
+      </div>
+      <div class="field-row">
+        <span class="label">出生地：</span><span class="value">山东省济南市</span>&emsp;&emsp;
+        <span class="label">职业：</span><span class="value">退休教师</span>
+      </div>
+      <div class="field-row">
+        <span class="label">入院时间：</span><span class="value">2026-07-25 14:30</span>&emsp;&emsp;
+        <span class="label">入院方式：</span><span class="value">步行入院</span>
+      </div>
+      <div class="field-row">
+        <span class="label">病史陈述者：</span><span class="value">患者本人</span>&emsp;&emsp;
+        <span class="label">可靠程度：</span><span class="value">可靠</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label active">主诉：</span><span class="value">发现血压升高10年，头晕3天。</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">现病史：</span><span class="value">患者10年前体检时发现血压升高，最高达170/100mmHg，当时无头晕、头痛、心悸、胸闷等不适，未予重视及系统治疗。3天前无明显诱因出现头晕，呈持续性胀痛，伴视物模糊，无恶心呕吐，无肢体麻木无力，无胸痛胸闷，休息后症状无明显缓解，为求进一步诊治来我院，门诊以"高血压病"收入我科。发病以来，精神、饮食、睡眠尚可，大小便正常，体重无明显变化。</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">既往史：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">个人史：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">婚育史：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">家族史：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">体格检查：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">辅助检查：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+
+      <div class="section-gap"></div>
+
+      <div class="field-row">
+        <span class="label">初步诊断：</span><span class="value empty">点击此处语音录入，或从右侧选择常用句…</span>
+      </div>
+    </div>
+
+    <!-- 录音浮窗 -->
+    <div class="voice-float">
+      <div class="wave">
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <span class="label-text">正在聆听 · 既往史</span>
+      <span class="time">00:12</span>
+      <button class="end-btn"></button>
+    </div>
+  </div>
+
+  <!-- 右侧面板 -->
+  <div class="right-sidebar">
+    <div class="field-tabs">
+      <span class="field-tab">主诉</span>
+      <span class="field-tab">现病史</span>
+      <span class="field-tab active">既往史</span>
+      <span class="field-tab">个人史</span>
+      <span class="field-tab">体查</span>
+      <span class="field-tab">辅检</span>
+      <span class="field-tab">诊断</span>
+      <span class="field-tab">计划</span>
+    </div>
+
+    <div class="right-scroll">
+      <div class="section-label"><span class="dot"></span>常用词</div>
+      <div class="chip-group">
+        <span class="chip">否认</span>
+        <span class="chip">有…病史</span>
+        <span class="chip">X年</span>
+        <span class="chip">控制可</span>
+        <span class="chip">控制欠佳</span>
+        <span class="chip">口服</span>
+        <span class="chip">规律服药</span>
+        <span class="chip">间断服药</span>
+      </div>
+
+      <div class="section-label"><span class="dot"></span>疾病词</div>
+      <div class="chip-group">
+        <span class="chip">高血压</span>
+        <span class="chip">糖尿病</span>
+        <span class="chip">冠心病</span>
+        <span class="chip">肝炎</span>
+        <span class="chip">结核</span>
+        <span class="chip">手术外伤</span>
+        <span class="chip">输血史</span>
+        <span class="chip">药物过敏</span>
+        <span class="chip">食物过敏</span>
+      </div>
+
+      <div class="section-label"><span class="dot"></span>短语</div>
+      <div class="chip-group">
+        <span class="chip">预防接种史随当地</span>
+        <span class="chip">否认传染病史</span>
+        <span class="chip">否认家族遗传病</span>
+      </div>
+
+      <div class="presets-area">
+        <div class="presets-header">📝 常用句（点击插入）</div>
+        <div class="preset-card">否认肝炎、结核等传染病史，否认手术外伤史，否认输血史，否认食物及药物过敏史。预防接种史随当地。</div>
+        <div class="preset-card">高血压病史X年，最高血压XXX/XXXmmHg，目前口服XX降压，血压控制可。</div>
+        <div class="preset-card">2型糖尿病病史X年，口服XX降糖，血糖控制尚可。</div>
+        <div class="preset-card">冠心病病史X年，口服阿司匹林、他汀等药物治疗。</div>
+        <div class="preset-card">否认高血压、糖尿病、冠心病等慢性病史。</div>
+        <button class="add-btn">➕ 添加常用句</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 底部栏 -->
+<div class="bottombar">
+  <span class="status-dot"></span>
+  <span>模型就绪</span>
+  <span>·</span>
+  <span>热词 2,989</span>
+  <span>·</span>
+  <span>知识图谱 27,947 实体</span>
+  <span>·</span>
+  <span>说明书 14,045 种</span>
+  <span>·</span>
+  <span>当前字段：<strong style="color:var(--accent)">既往史</strong></span>
+  <button class="rec-trigger">🎙 录音 (F5)</button>
+</div>
+
+<script>
+document.querySelectorAll('.field-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.field-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+  });
+});
+document.querySelectorAll('.sidebar-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+    item.classList.add('active');
+  });
+});
+document.querySelectorAll('.chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    chip.style.background = 'var(--accent)';
+    chip.style.color = 'white';
+    chip.style.borderColor = 'var(--accent)';
+    setTimeout(() => { chip.style.background = ''; chip.style.color = ''; chip.style.borderColor = ''; }, 250);
+  });
+});
+document.querySelectorAll('.preset-card').forEach(card => {
+  card.addEventListener('click', () => {
+    card.style.background = 'var(--warm)';
+    card.style.color = 'white';
+    card.style.borderColor = 'var(--warm)';
+    setTimeout(() => { card.style.background = ''; card.style.color = ''; card.style.borderColor = ''; }, 300);
+  });
+});
+</script>
+</body>
+</html>

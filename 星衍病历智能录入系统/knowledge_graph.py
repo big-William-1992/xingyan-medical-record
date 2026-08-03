@@ -25,6 +25,8 @@ class MedicalKnowledgeGraph:
         self.entity_types = {}   # 实体名称 → 类型
         self._sim_cache = {}     # 语义相似度缓存
         self._rel_set = set()    # 关系去重集合
+        self._rel_by_subj = {}   # 主体 → [(rel, obj)] 正向索引
+        self._rel_by_obj = {}    # 客体 → [(rel, subj)] 反向索引
         self.drug_inserts = {}   # 药物名 → 说明书信息
         self.aliases = {}        # 别名 → 标准实体名
         # 外部知识（OpenKG/CMeKG 等）导入目录，默认 ./kg_data
@@ -33,6 +35,8 @@ class MedicalKnowledgeGraph:
         self._build_graph()
         # 内置图谱构建后，尝试合并外部知识（无数据时静默跳过）
         self._load_external_kg()
+        # 加载批量下载的药品说明书
+        self._load_drug_inserts()
 
     def _build_graph(self):
         """构建知识图谱"""
@@ -636,6 +640,23 @@ class MedicalKnowledgeGraph:
             return
         self._rel_set.add(triple)
         self.relations.append(triple)
+        # 维护正/反向索引
+        self._rel_by_subj.setdefault(subj, []).append((rel, obj))
+        self._rel_by_obj.setdefault(obj, []).append((rel, subj))
+
+    def query_by_subj(self, subj, rel=None):
+        """正向查询：给定主体，返回 [(rel, obj)] 或过滤后的 [obj]"""
+        pairs = self._rel_by_subj.get(subj, [])
+        if rel:
+            return [o for r, o in pairs if r == rel]
+        return pairs
+
+    def query_by_obj(self, obj, rel=None):
+        """反向查询：给定客体，返回 [(rel, subj)] 或过滤后的 [subj]"""
+        pairs = self._rel_by_obj.get(obj, [])
+        if rel:
+            return [s for r, s in pairs if r == rel]
+        return pairs
 
     def _merge_entity(self, name, info):
         """合并一个实体到图谱：新增则登记，已存在则并入列表字段"""
@@ -789,9 +810,38 @@ class MedicalKnowledgeGraph:
         """把别名归一化到标准实体名（无别名时原样返回）"""
         return self.aliases.get(name, name)
 
+    def _load_drug_inserts(self):
+        """加载批量下载的药品说明书（kg_data/drug_inserts.json）"""
+        path = os.path.join(self.external_dir, "drug_inserts.json")
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            count = 0
+            for name, info in data.items():
+                if name and isinstance(info, dict) and name not in self.drug_inserts:
+                    self.drug_inserts[name] = info
+                    count += 1
+            if count:
+                print(f"[KG] 药品说明书加载: {count} 种 (总计 {len(self.drug_inserts)})")
+        except Exception as e:
+            print(f"[KG] 加载药品说明书失败: {e}")
+
     def get_drug_info(self, drug):
         """返回药物说明书信息（适应症/用法用量/禁忌/不良反应），无则 None"""
-        return self.drug_inserts.get(self.normalize(drug))
+        drug = self.normalize(drug)
+        # 精确匹配
+        if drug in self.drug_inserts:
+            return self.drug_inserts[drug]
+        # 模糊匹配：说明书键包含该药名（如"氨氯地平"→"苯磺酸氨氯地平片"）
+        if len(drug) >= 3:
+            candidates = [(k, v) for k, v in self.drug_inserts.items() if drug in k]
+            if candidates:
+                # 取最短的匹配（最接近通用名）
+                candidates.sort(key=lambda x: len(x[0]))
+                return candidates[0][1]
+        return None
 
     def recommend_treatment(self, disease):
         """

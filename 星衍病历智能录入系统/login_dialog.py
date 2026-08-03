@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-DEPARTMENTS = ["全科", "内科", "外科", "影像科", "妇产科", "儿科"]
+DEPARTMENTS = ["全科", "内科", "外科", "妇产科", "儿科"]
 ROLES = [("doctor", "医生"), ("admin", "管理员")]
 
 DIALOG_STYLE = """

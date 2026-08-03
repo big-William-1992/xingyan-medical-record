@@ -1,0 +1,71 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec.bak
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 项目数据（大文件不上传GitHub）
+kg_data/xywy_medical.json
+kg_data/xywy_kg.json
+kg_data/drug_inserts.json
+kg_data/medkg.json
+model/
+*.pkl
+*.bin
+*.pt
+*.onnx
+
+# 微调语料与权重（大文件，新机器可用 tts_generate.py 重新生成语料后重训）
+finetune_data/
+finetune_ckpt/
+
+# 用户数据
+*.db
+*.sqlite
+logs/
+crash.log
+correction_feedback.jsonl
+user_corpus.txt
+user_hotwords.txt
+theme_pref.json
+.hotwords_current.txt
+
+# 打包输出
+dist/
+build/
+
+# 临时文件
+*.tmp
+*.bak
+*.log
+
+# UI原型（设计稿，非运行代码）
+ui-prototype.html
+ui-prototype-light.html
+ui-redesign.html
+webview_main.html
+webview_editor.html
+webview_editor.py
+webview_bridge.py

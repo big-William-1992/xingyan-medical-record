@@ -4,6 +4,16 @@
 """
 import sys
 import os
+
+# WebEngine 环境变量（必须在任何 Qt 导入前设置）
+import os as _os_pre
+_venv_qt = _os_pre.path.join(_os_pre.path.dirname(_os_pre.path.abspath(__file__)),
+    'venv', 'lib', 'python3.14', 'site-packages', 'PyQt5', 'Qt5')
+_os_pre.environ['QTWEBENGINE_RESOURCES_PATH'] = _os_pre.path.join(_venv_qt, 'lib', 'QtWebEngineCore.framework', 'Resources')
+_os_pre.environ['QTWEBENGINE_LOCALES_PATH'] = _os_pre.path.join(_venv_qt, 'lib', 'QtWebEngineCore.framework', 'Resources', 'qtwebengine_locales')
+_os_pre.environ.setdefault('QTWEBENGINE_CHROMIUM_FLAGS', '--no-sandbox')
+del _os_pre, _venv_qt
+
 import json
 import time
 import re
@@ -15,10 +25,17 @@ from PyQt5.QtWidgets import (
     QMessageBox, QCheckBox, QGroupBox, QFileDialog,
     QDialog, QLineEdit, QTableWidget, QTableWidgetItem,
     QTabWidget, QHeaderView, QTextBrowser, QToolButton,
-    QAction, QMenu, QScrollArea, QFrame
+    QAction, QMenu, QScrollArea, QFrame, QInputDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QTextCharFormat
+
+# QtWebEngine 必须在 QApplication 创建前导入
+try:
+    from PyQt5.QtWebEngineWidgets import QWebEngineView  # noqa: F401
+    _HAS_WEBENGINE = True
+except ImportError:
+    _HAS_WEBENGINE = False
 
 from corrector import Corrector
 from asr_engine import ASREngine
@@ -521,8 +538,10 @@ class FieldWordsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._words_data = {}
+        self._presets_data = {}
         self._current_field = ""
         self._load_words()
+        self._load_presets()
         self._init_ui()
 
     def _load_words(self):
@@ -538,6 +557,21 @@ class FieldWordsPanel(QWidget):
                 self._words_data = json.load(f)
         except Exception:
             self._words_data = dict(self.DEFAULT_WORDS)
+
+    def _load_presets(self):
+        """加载 field_presets.json（字段常用句）"""
+        presets_path = os.path.join(os.path.dirname(__file__), "field_presets.json")
+        try:
+            with open(presets_path, 'r', encoding='utf-8') as f:
+                self._presets_data = json.load(f)
+        except Exception:
+            self._presets_data = {}
+
+    def _save_presets(self):
+        """保存 field_presets.json"""
+        presets_path = os.path.join(os.path.dirname(__file__), "field_presets.json")
+        with open(presets_path, 'w', encoding='utf-8') as f:
+            json.dump(self._presets_data, f, ensure_ascii=False, indent=2)
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -594,7 +628,7 @@ class FieldWordsPanel(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        scroll.setMaximumHeight(180)
+        scroll.setMaximumHeight(280)
         scroll.setStyleSheet("""
             QScrollArea {
                 border: 1px solid rgba(0,212,255,0.08);
@@ -664,6 +698,56 @@ class FieldWordsPanel(QWidget):
             row = self._create_term_row(terms, field)
             self._terms_layout.addWidget(row)
 
+        # ─── 常用句区域 ───
+        presets = self._presets_data.get(field, [])
+        if presets:
+            preset_label = QLabel("📝 常用句（点击插入）")
+            preset_label.setStyleSheet(
+                "color: #ffa500; font-size: 11px; font-weight: bold; padding: 4px 0 2px;"
+            )
+            self._terms_layout.addWidget(preset_label)
+            for sentence in presets:
+                btn = QPushButton(sentence[:30] + ("..." if len(sentence) > 30 else ""))
+                btn.setToolTip(sentence)
+                btn.setFixedHeight(26)
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.clicked.connect(lambda checked, s=sentence: self.term_clicked.emit(s))
+                btn.setStyleSheet("""
+                    QPushButton {
+                        background: rgba(255,165,0,0.08);
+                        color: #e8d5b0;
+                        border: 1px solid rgba(255,165,0,0.2);
+                        border-radius: 4px;
+                        padding: 3px 8px;
+                        font-size: 11px;
+                        text-align: left;
+                    }
+                    QPushButton:hover {
+                        background: rgba(255,165,0,0.2);
+                        color: #ffa500;
+                        border-color: rgba(255,165,0,0.5);
+                    }
+                """)
+                self._terms_layout.addWidget(btn)
+
+        # “+ 添加常用句”按钮
+        add_btn = QPushButton("➕ 添加常用句")
+        add_btn.setFixedHeight(24)
+        add_btn.setCursor(Qt.PointingHandCursor)
+        add_btn.clicked.connect(lambda: self._add_preset_for_field(field))
+        add_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #788;
+                border: 1px dashed rgba(255,255,255,0.15);
+                border-radius: 4px;
+                padding: 2px 8px;
+                font-size: 10px;
+            }
+            QPushButton:hover { color: #ffa500; border-color: rgba(255,165,0,0.4); }
+        """)
+        self._terms_layout.addWidget(add_btn)
+
         self._terms_layout.addStretch()
 
     def _create_term_row(self, terms, field):
@@ -699,6 +783,23 @@ class FieldWordsPanel(QWidget):
 
         row_layout.addStretch()
         return row
+
+    def _add_preset_for_field(self, field):
+        """弹出输入框，为当前字段添加常用句"""
+        text, ok = QInputDialog.getMultiLineText(
+            self, f"添加常用句 — {field}",
+            f"请输入「{field}」的常用句：",
+            ""
+        )
+        if ok and text.strip():
+            sentence = text.strip()
+            if field not in self._presets_data:
+                self._presets_data[field] = []
+            if sentence not in self._presets_data[field]:
+                self._presets_data[field].append(sentence)
+                self._save_presets()
+                # 刷新显示
+                self._show_field_terms(field)
 
     def set_current_field(self, field):
         """外部设置当前字段"""
@@ -1001,6 +1102,7 @@ class MedVoiceApp(QMainWindow):
         more_menu.addAction("📏 规则管理", self._open_rule_manager)
         more_menu.addAction("📋 结构化解析", self._open_struct_view)
         more_menu.addSeparator()
+        more_menu.addAction("🧠 重训语言模型", self._retrain_lm)
         more_menu.addAction("📋 崩溃日志", self._view_crash_log)
         more_btn.setMenu(more_menu)
         more_btn.setStyleSheet("""
@@ -1276,7 +1378,7 @@ class MedVoiceApp(QMainWindow):
 
         # 字段常用词面板
         self.field_panel = FieldWordsPanel()
-        self.field_panel.setMaximumHeight(220)
+        self.field_panel.setMaximumHeight(340)
         self.field_panel.term_clicked.connect(self._insert_term_at_cursor)
         right_layout.addWidget(self.field_panel)
 
@@ -2236,8 +2338,9 @@ class MedVoiceApp(QMainWindow):
                     self.current_dept, template_name
                 )
                 if template_content:
-                    current_content = self.text_edit.toPlainText().strip()
-                    base = current_content if current_content else template_content
+                    # 使用录音前的干净内容作为 base（避免流式识别追加的垃圾文本干扰）
+                    clean_base = getattr(self, '_stream_base_text', '').strip()
+                    base = clean_base if clean_base else template_content
 
                     # 检查是否是常见病模板（含X占位符）
                     import re as _re
@@ -2245,6 +2348,7 @@ class MedVoiceApp(QMainWindow):
                         # 常见病模板模式：用语音输入替换X占位符
                         filled = self._replace_placeholders_with_voice(text, base)
                         self.text_edit.setPlainText(filled)
+                        self._last_asr_snapshot = filled  # 记录ASR填充后快照
                         remaining = len(_re.findall(r'X+', filled))
                         self.partial_label.setText(f"✓ 已替换占位符，剩余 {remaining} 处")
                         self.status_bar.showMessage(f"套用完成，剩余 {remaining} 处占位符待手动填写")
@@ -2253,6 +2357,7 @@ class MedVoiceApp(QMainWindow):
 
                     filled = self.classifier.incremental_fill(text, base)
                     self.text_edit.setPlainText(filled)
+                    self._last_asr_snapshot = filled  # 记录ASR填充后快照
                     self.partial_label.setText("✓ 识别完成")
                     self.status_bar.showMessage(f"识别完成，共 {len(filled)} 字")
                     print(f"[UI] 增量填充完成")
@@ -2264,6 +2369,7 @@ class MedVoiceApp(QMainWindow):
                 # 有内容时，在末尾追加识别结果
                 text = current.rstrip() + "\n\n" + text
             self.text_edit.setPlainText(text)
+            self._last_asr_snapshot = text  # 记录ASR填充后快照
             self.partial_label.setText("✓ 识别完成")
             self.status_bar.showMessage(f"识别完成，共 {len(text)} 字")
             print(f"[UI] 文本已插入编辑器")
@@ -2291,20 +2397,11 @@ class MedVoiceApp(QMainWindow):
             self.audio_player_widget.load(audio_path)
 
     def _on_partial(self, text):
-        """流式识别中间结果：实时更新编辑器内容（边说边出字）"""
+        """流式识别中间结果：仅在状态栏实时提示，不写入编辑器（避免污染模板结构）"""
         if not text:
             return
         self._stream_has_partial = True
-        self.partial_label.setText(f"🔊 识别中：{text[-40:]}")
-        # 实时将流式结果写入编辑器（替换上一次流式内容）
-        if hasattr(self, '_stream_base_text'):
-            # 保留录音前的已有内容，流式结果追加在后面
-            display = self._stream_base_text.rstrip() + "\n" + text if self._stream_base_text.strip() else text
-            self.text_edit.setPlainText(display)
-            # 光标移到末尾
-            cursor = self.text_edit.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            self.text_edit.setTextCursor(cursor)
+        self.partial_label.setText(f"🔊 识别中：{text[-50:]}")
 
     def _run_correction(self):
         """执行纠错"""
@@ -2863,10 +2960,64 @@ class MedVoiceApp(QMainWindow):
         except Exception:
             pass
 
+        # 提取用户手动修正（对比 ASR 快照 vs 终稿）→ 写入混淆对候选
+        try:
+            self._extract_manual_corrections(content)
+        except Exception as e:
+            print(f"[Main] 提取手动修正失败: {e}")
+
     def _extract_patient_name(self, content):
         """从病历文本中提取“姓名：XXX”字段，提不到返回空字符串"""
         m = re.search(r'姓名[：:]\s*([^\s　\n]{1,10})', content)
         return m.group(1).strip() if m else ""
+
+    def _extract_manual_corrections(self, final_text):
+        """对比 ASR 快照与终稿，提取用户手动修正的词语对，写入混淆对候选"""
+        import difflib
+        snapshot = getattr(self, '_last_asr_snapshot', '')
+        if not snapshot or not final_text:
+            return
+        # 如果终稿和快照完全相同，没有手动修改
+        if snapshot.strip() == final_text.strip():
+            return
+
+        # 用 difflib 找出替换块
+        sm = difflib.SequenceMatcher(None, snapshot, final_text)
+        corrections = []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == 'replace':
+                old = snapshot[i1:i2].strip()
+                new = final_text[j1:j2].strip()
+                # 过滤：太长的不算单词级修正（可能是整段重写）
+                # 太短的不算（单字可能是误触）
+                if old and new and 2 <= len(old) <= 20 and 2 <= len(new) <= 20:
+                    # 过滤纯标点/空白变化
+                    if old.replace(' ', '') != new.replace(' ', ''):
+                        corrections.append((old, new))
+
+        if not corrections:
+            return
+
+        # 写入 correction_feedback.jsonl（标记为 manual_edit 来源）
+        import json, datetime
+        feedback_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "correction_feedback.jsonl")
+        with open(feedback_path, 'a', encoding='utf-8') as f:
+            for old, new in corrections:
+                record = {
+                    "original": old,
+                    "corrected": new,
+                    "原文": old,
+                    "修正": new,
+                    "type": "manual_edit",
+                    "status": "accepted",
+                    "source": "user_manual",
+                    "timestamp": datetime.datetime.now().isoformat()
+                }
+                f.write(json.dumps(record, ensure_ascii=False) + '\n')
+
+        print(f"[Main] 提取手动修正: {len(corrections)} 对 → {corrections[:5]}")
+        # 清除快照（避免下次保存重复提取）
+        self._last_asr_snapshot = final_text
 
     def _open_record_manager(self):
         """打开病历库，选中后回填到编辑器"""
@@ -3093,6 +3244,47 @@ class MedVoiceApp(QMainWindow):
             structured = dialog.get_result()
             self.text_edit.setPlainText(structured)
             self.status_bar.showMessage("📋 结构化填充完成")
+
+    def _retrain_lm(self):
+        """一键重训 3-gram 语言模型（从累积的用户语料 + 基础语料）"""
+        import subprocess
+        corpus_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_corpus.txt")
+        corpus_count = 0
+        if os.path.exists(corpus_file):
+            with open(corpus_file, "r", encoding="utf-8") as f:
+                corpus_count = sum(1 for line in f if line.strip())
+
+        reply = QMessageBox.question(
+            self, "重训语言模型",
+            f"当前已累积用户语料: {corpus_count} 句\n\n"
+            f"重训将合并基础语料 + 用户语料 + 纠错反馈，\n"
+            f"生成新的 3-gram 模型（重启后生效）。\n\n开始训练？",
+            QMessageBox.Yes | QMessageBox.No
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self.status_bar.showMessage("🧠 正在重训语言模型...")
+        try:
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_lm.py")
+            result = subprocess.run(
+                [sys.executable, script],
+                capture_output=True, text=True, timeout=120,
+                cwd=os.path.dirname(os.path.abspath(__file__))
+            )
+            if result.returncode == 0:
+                # 提取关键信息
+                output = result.stdout
+                Toast.show_toast(self, "语言模型重训完成，重启后生效", "success")
+                self.status_bar.showMessage("🧠 语言模型已更新，重启程序后生效")
+                print(f"[LM] 重训完成:\n{output[-500:]}")
+            else:
+                QMessageBox.warning(self, "训练失败", result.stderr[-300:] or "未知错误")
+                self.status_bar.showMessage("⚠️ 语言模型训练失败")
+        except subprocess.TimeoutExpired:
+            QMessageBox.warning(self, "超时", "训练超时（>120s），请通过命令行执行")
+        except Exception as e:
+            QMessageBox.warning(self, "错误", str(e))
 
     def _view_crash_log(self):
         """查看崩溃日志"""
@@ -3541,6 +3733,343 @@ class SectionDialog(QDialog):
         return "\n\n".join(lines)
 
 
+# ==================== WebView 主窗口 ====================
+class WebViewApp(QMainWindow):
+    """基于 QWebEngineView 的新版主界面"""
+
+    def __init__(self, db=None, current_user=None):
+        super().__init__()
+        self.db = db
+        self.current_user = current_user or {}
+        self.current_record_id = None
+        self.current_dept = "通用"
+        self._current_field = "主诉"
+        self.is_listening = False
+        self._record_start_ts = None
+        self._auto_stop_timer = None
+
+        uname = self.current_user.get("username", "")
+        title = "星衍AI · 智能病历录入"
+        if uname:
+            title += f"  |  {uname}"
+        self.setWindowTitle(title)
+        self.setGeometry(80, 60, 1400, 900)
+
+        # 核心引擎
+        self.rule_engine = RuleEngine()
+        self.corrector = Corrector(rule_engine=self.rule_engine)
+        self.template_engine = TemplateEngine()
+        self.parser = SectionParser()
+        self.classifier = MedicalClassifier()
+        self.qa_engine = KnowledgeQA()
+        self.feedback = CorrectionFeedback()
+        self.crash_logger = CrashLogger()
+        self.crash_logger.log_event("应用启动(WebView)")
+        self.voice_command = VoiceCommandParser()
+
+        # ASR
+        model_path = os.path.join(os.path.dirname(__file__), "model")
+        self.asr = ASREngine(model_path=model_path)
+        self.listen_thread = None
+
+        # 常用句
+        self._presets_path = os.path.join(os.path.dirname(__file__), "field_presets.json")
+        self._presets_data = {}
+        self._load_presets()
+
+        # WebView
+        from webview_bridge import WebViewMain
+        self.webview = WebViewMain(self)
+        self.setCentralWidget(self.webview)
+
+        # 连接桥接信号
+        br = self.webview.bridge
+        br.sig_rec_toggle.connect(self._toggle_recording)
+        br.sig_save.connect(self._save_record)
+        br.sig_qa.connect(self._show_qa)
+        br.sig_template_mgr.connect(self._open_template_manager)
+        br.sig_retrain.connect(self._retrain_lm)
+        br.sig_dept_changed.connect(self._on_dept_changed)
+        br.sig_template_changed.connect(self._on_template_changed)
+        br.sig_field_changed.connect(self._on_field_changed)
+        br.sig_editor_changed.connect(self._on_editor_changed)
+        br.sig_chip_click.connect(self._on_chip_click)
+        br.sig_preset_click.connect(self._on_preset_click)
+        br.sig_add_preset.connect(self._on_add_preset)
+
+        # 录音计时
+        self._duration_timer = QTimer(self)
+        self._duration_timer.setInterval(1000)
+        self._duration_timer.timeout.connect(self._update_rec_time)
+        self._rec_seconds = 0
+
+        # 延迟初始化 UI 数据（等页面加载完成）
+        self.webview.set_on_ready(self._init_webview_data)
+
+    def _load_presets(self):
+        try:
+            with open(self._presets_path, 'r', encoding='utf-8') as f:
+                self._presets_data = json.load(f)
+        except Exception:
+            self._presets_data = {}
+
+    def _save_presets(self):
+        with open(self._presets_path, 'w', encoding='utf-8') as f:
+            json.dump(self._presets_data, f, ensure_ascii=False, indent=2)
+
+    def _init_webview_data(self):
+        """WebView 加载完成后推送初始数据"""
+        # 科室列表
+        depts = ["全科", "内科", "外科", "妇产科", "儿科"]
+        self.webview.js_set_depts(depts)
+        # 模板列表
+        self._refresh_templates()
+        # 字段导航
+        fields = ["主诉", "现病史", "既往史", "个人史", "婚育史", "家族史",
+                  "体格检查", "辅助检查", "初步诊断", "诊疗计划"]
+        self.webview.js_set_fields(fields, "主诉")
+        # 状态栏统计
+        hw = len(self.asr._current_hotwords.split()) if self.asr._current_hotwords else 0
+        kg_count = len(self.qa_engine.kg.entities) if self.qa_engine.kg else 0
+        drug_count = len(self.qa_engine.kg.drug_inserts) if self.qa_engine.kg else 0
+        self.webview.js_set_stats(str(hw), str(kg_count), str(drug_count))
+        # 默认科室热词
+        self.corrector.set_department("通用")
+        self.asr.set_hotwords("通用")
+        # 默认上下文面板
+        self._update_context_panel("主诉")
+
+    def _refresh_templates(self):
+        dept = self.current_dept if self.current_dept != "通用" else "内科"
+        tpls = self.template_engine.get_templates(dept)
+        tpl_names = [t["name"] for t in tpls]
+        self.webview.js_set_templates(tpl_names)
+
+    def _update_context_panel(self, field):
+        """更新右侧上下文面板"""
+        # 从 field_words.json 获取常用词
+        import os as _os
+        fw_path = _os.path.join(_os.path.dirname(__file__), "field_words.json")
+        sections = []
+        try:
+            with open(fw_path, 'r', encoding='utf-8') as f:
+                fw = json.load(f)
+            field_data = fw.get(field, {})
+            terms = field_data.get("terms", {})
+            if isinstance(terms, dict):
+                for cat, words in terms.items():
+                    sections.append({"title": cat, "words": words[:12]})
+            elif isinstance(terms, list):
+                sections.append({"title": "常用词", "words": terms[:15]})
+        except Exception:
+            pass
+        # 常用句
+        presets = self._presets_data.get(field, [])
+        self.webview.js_set_context_panel(f"常用词 · {field}", sections, presets)
+
+    # ─── 桥接信号处理 ───
+
+    def _toggle_recording(self):
+        if self.is_listening:
+            self._stop_recording()
+        else:
+            self._start_recording()
+
+    def _start_recording(self):
+        self.is_listening = True
+        self._rec_seconds = 0
+        self._record_start_ts = time.time()
+        self._duration_timer.start()
+        self.webview.js_set_recording(True, "主诉", "00:00")
+        # 启动 ASR
+        self.listen_thread = ListenThread(self.asr)
+        self.listen_thread.text_ready.connect(self._on_recognized)
+        self.listen_thread.partial_text.connect(self._on_partial)
+        self.listen_thread.start()
+
+    def _stop_recording(self):
+        self.is_listening = False
+        self._duration_timer.stop()
+        self.webview.js_set_recording(False)
+        if self.listen_thread and self.listen_thread.isRunning():
+            self.listen_thread.stop()
+            self.listen_thread.wait(3000)
+
+    def _update_rec_time(self):
+        self._rec_seconds += 1
+        m, s = divmod(self._rec_seconds, 60)
+        self.webview.js_set_recording(True, "", f"{m:02d}:{s:02d}")
+
+    def _on_recognized(self, text):
+        if not text:
+            return
+        # 语音命令拦截
+        cmd, arg = self.voice_command.parse(text)
+        if cmd == "stop_record":
+            self._stop_recording()
+            return
+        if cmd == "save":
+            self._save_record()
+            return
+        # 结构化填充：将识别文本智能分配到模板字段
+        self._fill_and_update(text)
+
+    def _fill_and_update(self, asr_text):
+        """调用 MedicalClassifier.incremental_fill 做结构化填充"""
+        try:
+            base = getattr(self, '_last_editor_text', '') or ''
+            if not base:
+                # 尝试从模板获取
+                dept = self.current_dept if self.current_dept != "通用" else "内科"
+                tpls = self.template_engine.get_templates(dept)
+                if tpls:
+                    base = tpls[0].get('content', '')
+            if not base:
+                # 无模板，直接插入
+                self.webview.js_insert_text(asr_text)
+                return
+            filled = self.classifier.incremental_fill(asr_text, base)
+            if filled != base:
+                html = self._text_to_editor_html(filled)
+                self.webview.js_set_content(html)
+                self._last_editor_text = filled
+            else:
+                # 填充无变化，降级为直接插入
+                self.webview.js_insert_text(asr_text)
+        except Exception as e:
+            print(f"[Fill] error: {e}")
+            self.webview.js_insert_text(asr_text)
+
+    def _on_partial(self, text):
+        pass  # 流式结果暂不显示在 WebView
+
+    def _on_editor_changed(self, text):
+        """编辑器内容变化（用于保存时获取）"""
+        self._last_editor_text = text
+
+    def _save_record(self):
+        text = getattr(self, '_last_editor_text', '')
+        if not text:
+            self.webview.get_editor_text(self._do_save)
+        else:
+            self._do_save(text)
+
+    def _do_save(self, text):
+        if not text or not text.strip():
+            self.webview.js_show_toast("没有内容可保存")
+            return
+        if not self.db or not self.current_user:
+            self.webview.js_show_toast("未登录")
+            return
+        content = text.strip()
+        patient_name = ""
+        m = re.search(r'姓名[：:]\s*([^\s　\n]{1,10})', content)
+        if m:
+            patient_name = m.group(1).strip()
+        dept = self.current_dept if self.current_dept != "通用" else ""
+        if self.current_record_id is None:
+            self.current_record_id = self.db.create_record(
+                self.current_user["id"], patient_name, dept, "", content, "草稿"
+            )
+            self.webview.js_show_toast("💾 病历已保存")
+        else:
+            self.db.update_record(self.current_record_id, content=content)
+            self.webview.js_show_toast("💾 病历已更新")
+        # 收集语料
+        try:
+            self.feedback.collect_corpus(content)
+        except Exception:
+            pass
+
+    def _show_qa(self):
+        try:
+            from qa_dialog import KnowledgeQADialog
+            dlg = KnowledgeQADialog(self.qa_engine, self)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "问答错误", f"知识问答模块加载失败：\n{e}")
+
+    def _open_template_manager(self):
+        from main import TemplateManagerDialog
+        dlg = TemplateManagerDialog(self.template_engine, self.current_dept, self)
+        if dlg.exec_() == QDialog.Accepted:
+            self._refresh_templates()
+
+    def _retrain_lm(self):
+        import subprocess
+        reply = QMessageBox.question(self, "重训语言模型",
+            "将合并用户语料+纠错反馈重训 3-gram 模型。\n开始？",
+            QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "train_lm.py")
+        try:
+            subprocess.run([sys.executable, script], capture_output=True, text=True, timeout=120,
+                          cwd=os.path.dirname(os.path.abspath(__file__)))
+            self.webview.js_show_toast("🧠 语言模型重训完成，重启后生效")
+        except Exception as e:
+            self.webview.js_show_toast(f"重训失败: {e}")
+
+    def _on_dept_changed(self, dept):
+        self.current_dept = dept
+        self.corrector.set_department(dept)
+        self.asr.set_hotwords(dept)
+        self._refresh_templates()
+
+    def _on_template_changed(self, tpl_name):
+        dept = self.current_dept if self.current_dept != "通用" else "内科"
+        content = self.template_engine.get_template(dept, tpl_name)
+        if content:
+            # 将模板文本转为 HTML（高亮字段名）
+            html = self._text_to_editor_html(content)
+            self.webview.js_set_content(html)
+            self._last_editor_text = content
+
+    def _on_field_changed(self, field):
+        self._current_field = field
+        self._update_context_panel(field)
+        # 设置 ASR 字段上下文
+        self.asr.set_field_context(field)
+
+    def _on_chip_click(self, word):
+        self.webview.js_insert_text(word)
+
+    def _on_preset_click(self, sentence):
+        self.webview.js_insert_text(sentence)
+
+    def _on_add_preset(self):
+        text, ok = QInputDialog.getMultiLineText(self, "添加常用句", "请输入常用句：", "")
+        if ok and text.strip():
+            field = self._current_field
+            if field not in self._presets_data:
+                self._presets_data[field] = []
+            if text.strip() not in self._presets_data[field]:
+                self._presets_data[field].append(text.strip())
+                self._save_presets()
+            self._update_context_panel(field)
+
+    @staticmethod
+    def _text_to_editor_html(text):
+        """将纯文本模板转为带字段高亮的 HTML"""
+        fields = ['姓名', '性别', '年龄', '民族', '婚姻状况', '出生地', '职业',
+                  '入院时间', '入院方式', '病史陈述者', '可靠程度', '主诉', '现病史',
+                  '既往史', '个人史', '婚育史', '家族史', '体格检查', '辅助检查',
+                  '初步诊断', '鉴别诊断', '诊疗计划', '诊疗经过', '出院情况', '出院医嘱',
+                  '术前诊断', '手术名称', '术中情况', '术后诊断', '术后医嘱']
+        import html as _html
+        escaped = _html.escape(text)
+        for f in fields:
+            pattern = re.escape(f) + r'[：:]'
+            escaped = re.sub(pattern, f'<span class="fl">{f}：</span>', escaped)
+        escaped = escaped.replace('\n', '<br>')
+        return escaped
+
+    def closeEvent(self, event):
+        if self.is_listening:
+            self._stop_recording()
+        super().closeEvent(event)
+
+
 # ==================== 启动入口 ====================
 def main():
     app = QApplication(sys.argv)
@@ -3567,7 +4096,16 @@ def main():
     if login.exec_() != QDialog.Accepted or not login.current_user:
         sys.exit(0)
 
-    window = MedVoiceApp(db=db, current_user=login.current_user)
+    # 默认启用新版 WebView UI，--legacy 回退原生界面
+    use_webview = '--legacy' not in sys.argv
+    if use_webview and _HAS_WEBENGINE:
+        try:
+            window = WebViewApp(db=db, current_user=login.current_user)
+        except Exception as e:
+            print(f"[Main] WebView 初始化失败，回退到原生 UI: {e}")
+            window = MedVoiceApp(db=db, current_user=login.current_user)
+    else:
+        window = MedVoiceApp(db=db, current_user=login.current_user)
     window.show()
 
     sys.exit(app.exec_())

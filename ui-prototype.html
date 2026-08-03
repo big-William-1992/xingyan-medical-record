@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI病历录入 — UI原型</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&family=JetBrains+Mono:wght@400;500&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg-deep: #080c14;
+  --bg-panel: #0d1220;
+  --bg-card: #131a2b;
+  --bg-hover: #1a2340;
+  --border: rgba(0, 200, 255, 0.08);
+  --border-active: rgba(0, 200, 255, 0.3);
+  --accent: #00c8ff;
+  --accent-dim: rgba(0, 200, 255, 0.15);
+  --accent-glow: rgba(0, 200, 255, 0.4);
+  --warm: #ff9f43;
+  --warm-dim: rgba(255, 159, 67, 0.12);
+  --success: #2ed573;
+  --danger: #ff4757;
+  --text-primary: #e8edf5;
+  --text-secondary: #8899b0;
+  --text-muted: #4a5a70;
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+body {
+  font-family: 'Noto Sans SC', -apple-system, sans-serif;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ─── 顶部工具栏 ─── */
+.toolbar {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  z-index: 100;
+}
+
+.toolbar .logo {
+  font-weight: 900;
+  font-size: 15px;
+  letter-spacing: -0.5px;
+  background: linear-gradient(135deg, var(--accent), #6dd5fa);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-right: 8px;
+}
+
+.toolbar .dept-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.2s;
+}
+.toolbar .dept-select:hover { border-color: var(--border-active); }
+
+.toolbar .template-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  min-width: 140px;
+}
+
+.toolbar .spacer { flex: 1; }
+
+.toolbar .btn {
+  padding: 5px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.toolbar .btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-active);
+}
+.toolbar .btn.primary {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.toolbar .btn.primary:hover {
+  background: var(--accent);
+  color: var(--bg-deep);
+}
+
+/* ─── 主布局 ─── */
+.main-layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 200px 1fr 280px;
+  overflow: hidden;
+}
+
+/* ─── 左侧模板面板 ─── */
+.left-panel {
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-header {
+  padding: 12px 14px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.template-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.template-item {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  margin-bottom: 2px;
+}
+.template-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.template-item.active {
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 500;
+}
+.template-item .badge {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: var(--warm-dim);
+  color: var(--warm);
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+/* ─── 中间编辑区 ─── */
+.center-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  position: relative;
+}
+
+.editor-area {
+  flex: 1;
+  padding: 20px 28px;
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 2;
+  color: var(--text-primary);
+}
+
+.editor-area .field-label {
+  color: var(--accent);
+  font-weight: 500;
+  cursor: pointer;
+  position: relative;
+}
+.editor-area .field-label::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: var(--accent);
+  opacity: 0.3;
+}
+.editor-area .field-label.active-field {
+  background: var(--accent-dim);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.editor-area .field-label.active-field::after { display: none; }
+
+.editor-area .field-content {
+  color: var(--text-primary);
+}
+.editor-area .field-content.empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* 录音状态浮层 */
+.voice-overlay {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(13, 18, 32, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border-active);
+  border-radius: 16px;
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 20px var(--accent-dim);
+  animation: float-in 0.3s ease-out;
+}
+
+@keyframes float-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(10px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+.voice-overlay .waveform {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+}
+.voice-overlay .waveform .bar {
+  width: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  animation: wave 0.8s ease-in-out infinite alternate;
+}
+.voice-overlay .waveform .bar:nth-child(1) { height: 8px; animation-delay: 0s; }
+.voice-overlay .waveform .bar:nth-child(2) { height: 16px; animation-delay: 0.1s; }
+.voice-overlay .waveform .bar:nth-child(3) { height: 24px; animation-delay: 0.2s; }
+.voice-overlay .waveform .bar:nth-child(4) { height: 12px; animation-delay: 0.3s; }
+.voice-overlay .waveform .bar:nth-child(5) { height: 20px; animation-delay: 0.15s; }
+.voice-overlay .waveform .bar:nth-child(6) { height: 8px; animation-delay: 0.25s; }
+.voice-overlay .waveform .bar:nth-child(7) { height: 18px; animation-delay: 0.05s; }
+
+@keyframes wave {
+  0% { transform: scaleY(0.4); opacity: 0.5; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+
+.voice-overlay .status {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 500;
+}
+.voice-overlay .timer {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.voice-overlay .stop-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--danger);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s;
+}
+.voice-overlay .stop-btn:hover { transform: scale(1.1); }
+.voice-overlay .stop-btn::after {
+  content: '';
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 2px;
+}
+
+/* ─── 右侧面板 ─── */
+.right-panel {
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.field-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.field-tab {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.field-tab:hover {
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.field-tab.active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.terms-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.terms-section-title {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 10px 0 6px;
+  padding-left: 2px;
+}
+
+.term-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+.term-chip {
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  background: rgba(0, 200, 255, 0.06);
+  color: var(--text-secondary);
+  border: 1px solid rgba(0, 200, 255, 0.1);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.term-chip:hover {
+  background: var(--accent-dim);
+  color: var(--accent);
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.preset-sentences {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.preset-title {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--warm);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.preset-item {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--warm-dim);
+  border: 1px solid rgba(255, 159, 67, 0.1);
+  cursor: pointer;
+  margin-bottom: 4px;
+  transition: all 0.15s;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.preset-item:hover {
+  background: rgba(255, 159, 67, 0.2);
+  border-color: rgba(255, 159, 67, 0.3);
+  color: var(--warm);
+}
+
+.add-preset-btn {
+  margin-top: 8px;
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  background: transparent;
+  cursor: pointer;
+  width: 100%;
+  text-align: center;
+  transition: all 0.15s;
+}
+.add-preset-btn:hover {
+  color: var(--warm);
+  border-color: rgba(255, 159, 67, 0.3);
+}
+
+/* ─── 底部状态栏 ─── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  padding: 4px 16px;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  gap: 16px;
+}
+.status-bar .indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.status-bar .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  animation: pulse 2s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-bar .rec-btn {
+  padding: 3px 12px;
+  border-radius: 12px;
+  background: rgba(255, 71, 87, 0.15);
+  border: 1px solid rgba(255, 71, 87, 0.3);
+  color: var(--danger);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s;
+  font-weight: 500;
+}
+.status-bar .rec-btn:hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* ─── 滚动条 ─── */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* ─── 环境光效 ─── */
+.ambient-glow {
+  position: fixed;
+  top: -200px;
+  right: -200px;
+  width: 500px;
+  height: 500px;
+  background: radial-gradient(circle, rgba(0, 200, 255, 0.03) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+.ambient-glow-2 {
+  position: fixed;
+  bottom: -150px;
+  left: -100px;
+  width: 400px;
+  height: 400px;
+  background: radial-gradient(circle, rgba(255, 159, 67, 0.02) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+</style>
+</head>
+<body>
+
+<div class="ambient-glow"></div>
+<div class="ambient-glow-2"></div>
+
+<!-- 顶部工具栏 -->
+<div class="toolbar">
+  <span class="logo">星衍AI</span>
+  <select class="dept-select">
+    <option>内科</option>
+    <option>外科</option>
+    <option>妇产科</option>
+    <option>儿科</option>
+    <option>全科</option>
+  </select>
+  <select class="template-select">
+    <option>入院记录</option>
+    <option>首次病程记录</option>
+    <option>日常病程记录</option>
+    <option>出院记录</option>
+    <option>【常见病】高血压病</option>
+    <option>【常见病】2型糖尿病</option>
+  </select>
+  <div class="spacer"></div>
+  <button class="btn">💡 知识问答</button>
+  <button class="btn">📝 模板管理</button>
+  <button class="btn">🧠 重训模型</button>
+  <button class="btn primary">💾 保存</button>
+</div>
+
+<!-- 主布局 -->
+<div class="main-layout">
+
+  <!-- 左侧模板列表 -->
+  <div class="left-panel">
+    <div class="panel-header">病历模板</div>
+    <div class="template-list">
+      <div class="template-item active">入院记录</div>
+      <div class="template-item">首次病程记录</div>
+      <div class="template-item">首页病程</div>
+      <div class="template-item">日常病程记录</div>
+      <div class="template-item">出院记录</div>
+      <div class="template-item">转科记录</div>
+      <div class="template-item">会诊记录</div>
+      <div class="template-item">抢救记录</div>
+      <div class="template-item" style="margin-top: 12px; border-top: 1px solid var(--border); padding-top: 12px;">
+        【常见病】高血压病 <span class="badge">模板</span>
+      </div>
+      <div class="template-item">【常见病】2型糖尿病 <span class="badge">模板</span></div>
+      <div class="template-item">【常见病】冠心病 <span class="badge">模板</span></div>
+      <div class="template-item">【常见病】社区获得性肺炎 <span class="badge">模板</span></div>
+      <div class="template-item">【常见病】脑梗死 <span class="badge">模板</span></div>
+      <div class="template-item">【常见病】COPD急性加重 <span class="badge">模板</span></div>
+    </div>
+  </div>
+
+  <!-- 中间编辑区 -->
+  <div class="center-panel">
+    <div class="editor-area">
+      <p><span class="field-label">姓名：</span><span class="field-content">张三</span>&emsp;&emsp;<span class="field-label">性别：</span><span class="field-content">男</span>&emsp;&emsp;<span class="field-label">年龄：</span><span class="field-content">58岁</span>&emsp;&emsp;<span class="field-label">民族：</span><span class="field-content">汉族</span></p>
+      <p><span class="field-label">出生地：</span><span class="field-content">山东省济南市</span>&emsp;&emsp;<span class="field-label">职业：</span><span class="field-content">退休教师</span></p>
+      <p><span class="field-label">入院时间：</span><span class="field-content">2026-07-25 14:30</span>&emsp;&emsp;<span class="field-label">入院方式：</span><span class="field-content">步行入院</span></p>
+      <br>
+      <p><span class="field-label active-field">主诉：</span><span class="field-content">发现血压升高10年，头晕3天。</span></p>
+      <br>
+      <p><span class="field-label">现病史：</span><span class="field-content">患者10年前体检时发现血压升高，最高达170/100mmHg，当时无头晕、头痛、心悸、胸闷等不适，未予重视及系统治疗。3天前无明显诱因出现头晕，呈持续性胀痛，伴视物模糊，无恶心呕吐，无肢体麻木无力，无胸痛胸闷，休息后症状无明显缓解，为求进一步诊治来我院，门诊以"高血压病"收入我科。发病以来，精神、饮食、睡眠尚可，大小便正常，体重无明显变化。</span></p>
+      <br>
+      <p><span class="field-label">既往史：</span><span class="field-content empty">（点击语音录入或选择常用句）</span></p>
+      <br>
+      <p><span class="field-label">个人史：</span><span class="field-content empty">（点击语音录入或选择常用句）</span></p>
+      <br>
+      <p><span class="field-label">体格检查：</span><span class="field-content empty">（点击语音录入或选择常用句）</span></p>
+    </div>
+
+    <!-- 录音浮层 -->
+    <div class="voice-overlay">
+      <div class="waveform">
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+        <div class="bar"></div>
+      </div>
+      <span class="status">正在聆听 · 主诉</span>
+      <span class="timer">00:08</span>
+      <button class="stop-btn"></button>
+    </div>
+  </div>
+
+  <!-- 右侧字段面板 -->
+  <div class="right-panel">
+    <div class="field-tabs">
+      <span class="field-tab active">主诉</span>
+      <span class="field-tab">现病史</span>
+      <span class="field-tab">既往史</span>
+      <span class="field-tab">个人史</span>
+      <span class="field-tab">体格检查</span>
+      <span class="field-tab">辅助检查</span>
+      <span class="field-tab">初步诊断</span>
+      <span class="field-tab">诊疗计划</span>
+    </div>
+
+    <div class="terms-scroll">
+      <div class="terms-section-title">常用词</div>
+      <div class="term-chips">
+        <span class="term-chip">反复</span>
+        <span class="term-chip">持续性</span>
+        <span class="term-chip">阵发性</span>
+        <span class="term-chip">间歇性</span>
+        <span class="term-chip">加重</span>
+        <span class="term-chip">缓解</span>
+        <span class="term-chip">无明显诱因</span>
+        <span class="term-chip">受凉后</span>
+        <span class="term-chip">劳累后</span>
+        <span class="term-chip">X年</span>
+        <span class="term-chip">X天</span>
+        <span class="term-chip">X小时</span>
+      </div>
+
+      <div class="terms-section-title">症状词</div>
+      <div class="term-chips">
+        <span class="term-chip">头痛</span>
+        <span class="term-chip">头晕</span>
+        <span class="term-chip">视物模糊</span>
+        <span class="term-chip">耳鸣</span>
+        <span class="term-chip">心悸</span>
+        <span class="term-chip">胸闷</span>
+        <span class="term-chip">气短</span>
+        <span class="term-chip">乏力</span>
+        <span class="term-chip">恶心呕吐</span>
+        <span class="term-chip">肢体麻木</span>
+      </div>
+
+      <div class="preset-sentences">
+        <div class="preset-title">📝 常用句（点击插入）</div>
+        <div class="preset-item">反复头痛头晕X年，加重X天</div>
+        <div class="preset-item">发现血压升高X年，头晕X天</div>
+        <div class="preset-item">反复胸闷胸痛X年，加重X天</div>
+        <div class="preset-item">咳嗽咳痰X天，伴发热X天</div>
+        <div class="preset-item">突发右侧肢体无力X小时</div>
+        <div class="preset-item">头晕伴视物旋转X天</div>
+        <button class="add-preset-btn">➕ 添加常用句</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 底部状态栏 -->
+<div class="status-bar">
+  <div class="indicator"><span class="dot"></span> 模型就绪</div>
+  <span>热词：2,989 个</span>
+  <span>知识图谱：27,947 实体</span>
+  <span>说明书：14,045 种</span>
+  <div class="spacer" style="flex:1"></div>
+  <span>当前字段：<strong style="color:var(--accent)">主诉</strong></span>
+  <button class="rec-btn">🎙 开始录音 (F5)</button>
+</div>
+
+<script>
+// 交互演示
+document.querySelectorAll('.field-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.field-tab').forEach(t => t.classList.remove('active'));
+    tab.classList.add('active');
+  });
+});
+
+document.querySelectorAll('.template-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.template-item').forEach(i => i.classList.remove('active'));
+    item.classList.add('active');
+  });
+});
+
+document.querySelectorAll('.term-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    chip.style.background = 'var(--accent)';
+    chip.style.color = 'var(--bg-deep)';
+    setTimeout(() => {
+      chip.style.background = '';
+      chip.style.color = '';
+    }, 300);
+  });
+});
+
+document.querySelectorAll('.preset-item').forEach(item => {
+  item.addEventListener('click', () => {
+    item.style.borderColor = 'var(--warm)';
+    item.style.color = 'var(--warm)';
+    setTimeout(() => {
+      item.style.borderColor = '';
+      item.style.color = '';
+    }, 400);
+  });
+});
+</script>
+</body>
+</html>

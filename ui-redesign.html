@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星衍AI · 智能病历录入</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0d13;--bg2:#0f1319;--bg3:#151b24;--bg4:#1c2430;
+  --surface:#1a2030;--surface2:#222d3d;
+  --border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.1);
+  --accent:#38bdf8;--accent2:#0ea5e9;--accent-dim:rgba(56,189,248,.1);--accent-glow:rgba(56,189,248,.25);
+  --emerald:#34d399;--emerald-dim:rgba(52,211,153,.1);
+  --amber:#fbbf24;--amber-dim:rgba(251,191,36,.08);
+  --rose:#fb7185;--rose-dim:rgba(251,113,133,.1);
+  --text:#f1f5f9;--text2:#94a3b8;--text3:#64748b;--text4:#475569;
+  --font-display:'Space Grotesk','Noto Sans SC',sans-serif;
+  --font-body:'Noto Sans SC',-apple-system,sans-serif;
+  --font-mono:'JetBrains Mono',monospace;
+  --ease:cubic-bezier(.4,0,.2,1);--ease-out:cubic-bezier(0,.5,.5,1);
+  --radius:8px;--radius-lg:12px;--radius-xl:16px;
+}
+html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:var(--bg);color:var(--text)}
+
+/* ─── Ambient ─── */
+.ambient{position:fixed;inset:0;pointer-events:none;z-index:0;overflow:hidden}
+.ambient::before{content:'';position:absolute;top:-40%;right:-20%;width:800px;height:800px;background:radial-gradient(circle,rgba(56,189,248,.03) 0%,transparent 60%);animation:drift 20s ease-in-out infinite alternate}
+.ambient::after{content:'';position:absolute;bottom:-30%;left:-10%;width:600px;height:600px;background:radial-gradient(circle,rgba(52,211,153,.02) 0%,transparent 60%);animation:drift 25s ease-in-out infinite alternate-reverse}
+@keyframes drift{0%{transform:translate(0,0)}100%{transform:translate(30px,-20px)}}
+
+/* ─── Layout ─── */
+.app{position:relative;z-index:1;display:grid;grid-template-rows:auto 1fr auto;height:100vh}
+
+/* ─── Top Bar ─── */
+.topbar{
+  display:flex;align-items:center;padding:10px 20px;gap:12px;
+  background:rgba(10,13,19,.8);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);
+}
+.brand{display:flex;align-items:center;gap:10px;margin-right:16px}
+.brand-mark{
+  width:28px;height:28px;border-radius:6px;
+  background:linear-gradient(135deg,var(--accent),var(--emerald));
+  display:flex;align-items:center;justify-content:center;
+  font-family:var(--font-display);font-weight:700;font-size:13px;color:var(--bg);
+}
+.brand-name{font-family:var(--font-display);font-weight:600;font-size:14px;color:var(--text);letter-spacing:-.3px}
+.brand-ver{font-size:10px;color:var(--text3);margin-left:-4px}
+
+.topbar select{
+  padding:5px 10px;border-radius:6px;font-size:12px;
+  background:var(--surface);border:1px solid var(--border);color:var(--text2);
+  cursor:pointer;transition:border-color .2s;appearance:none;
+  padding-right:24px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2364748b'%3E%3Cpath d='M3 5l3 3 3-3'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 8px center;
+}
+.topbar select:hover{border-color:var(--border2)}
+.topbar select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-dim)}
+
+.topbar .spacer{flex:1}
+
+.topbar .act{
+  padding:5px 12px;border-radius:6px;font-size:11px;font-weight:500;
+  background:transparent;border:1px solid var(--border);color:var(--text3);
+  cursor:pointer;transition:all .15s var(--ease);
+}
+.topbar .act:hover{background:var(--surface);color:var(--text2);border-color:var(--border2)}
+.topbar .act.primary{background:var(--accent-dim);border-color:rgba(56,189,248,.2);color:var(--accent)}
+.topbar .act.primary:hover{background:var(--accent);color:var(--bg)}
+
+/* ─── Main Content ─── */
+.main{display:grid;grid-template-columns:220px 1fr;overflow:hidden;transition:grid-template-columns .3s var(--ease)}
+.main.sidebar-collapsed{grid-template-columns:0px 1fr}
+
+/* ─── Sidebar ─── */
+.sidebar{
+  background:var(--bg2);border-right:1px solid var(--border);
+  display:flex;flex-direction:column;overflow:hidden;
+  transition:opacity .2s;
+}
+.main.sidebar-collapsed .sidebar{opacity:0;pointer-events:none}
+.sidebar-hd{padding:14px 16px 8px;font-size:10px;font-weight:600;color:var(--text4);text-transform:uppercase;letter-spacing:1px}
+.sidebar-list{flex:1;overflow-y:auto;padding:0 8px 12px}
+.sidebar-item{
+  padding:8px 12px;border-radius:6px;font-size:12.5px;color:var(--text3);
+  cursor:pointer;transition:all .12s var(--ease);margin-bottom:1px;
+  display:flex;align-items:center;gap:8px;
+}
+.sidebar-item:hover{background:var(--surface);color:var(--text2)}
+.sidebar-item.active{background:var(--accent-dim);color:var(--accent);font-weight:500}
+.sidebar-item .ico{font-size:13px;opacity:.6;width:18px;text-align:center}
+.sidebar-item .tag{
+  margin-left:auto;font-size:9px;padding:1px 5px;border-radius:3px;
+  background:var(--amber-dim);color:var(--amber);font-weight:600;
+}
+.sidebar-sep{height:1px;background:var(--border);margin:8px 12px}
+
+/* ─── Editor Zone ─── */
+.editor-zone{display:flex;flex-direction:column;overflow:hidden;position:relative}
+
+/* Field Nav (horizontal pills) */
+.field-nav{
+  display:flex;align-items:center;padding:8px 20px;gap:6px;
+  border-bottom:1px solid var(--border);overflow-x:auto;
+  background:rgba(15,19,25,.6);backdrop-filter:blur(8px);
+}
+.field-nav::-webkit-scrollbar{height:0}
+.field-pill{
+  padding:4px 12px;border-radius:20px;font-size:11px;font-weight:500;
+  color:var(--text4);border:1px solid transparent;cursor:pointer;
+  white-space:nowrap;transition:all .15s var(--ease);user-select:none;
+}
+.field-pill:hover{color:var(--text2);background:var(--surface)}
+.field-pill.active{color:var(--accent);background:var(--accent-dim);border-color:rgba(56,189,248,.2)}
+
+/* Editor */
+.editor-scroll{flex:1;overflow-y:auto;padding:32px 48px 120px}
+.editor{
+  max-width:780px;margin:0 auto;outline:none;
+  font-size:15px;line-height:2;color:var(--text);
+  caret-color:var(--accent);min-height:300px;
+}
+.editor .fl{
+  color:var(--accent);font-weight:600;cursor:pointer;
+  border-radius:3px;padding:1px 3px;transition:background .15s;
+  position:relative;
+}
+.editor .fl::after{
+  content:'';position:absolute;bottom:0;left:3px;right:3px;
+  height:1.5px;background:var(--accent);opacity:.25;border-radius:1px;
+  transition:opacity .15s;
+}
+.editor .fl:hover{background:var(--accent-dim)}
+.editor .fl:hover::after{opacity:.5}
+.editor .fl.active{background:var(--accent-dim)}
+.editor .fl.active::after{opacity:1}
+.editor .val{color:var(--text)}
+.editor .val.empty{color:var(--text4);font-style:italic;font-size:13.5px}
+.editor .gap{height:16px}
+
+/* ─── Floating Dictation Bar ─── */
+.dict-bar{
+  position:absolute;bottom:24px;left:50%;transform:translateX(-50%);
+  background:rgba(21,27,36,.92);backdrop-filter:blur(16px) saturate(1.5);
+  border:1px solid var(--border2);border-radius:28px;
+  padding:8px 8px 8px 20px;display:flex;align-items:center;gap:14px;
+  box-shadow:0 8px 40px rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.03) inset;
+  transition:all .3s var(--ease);z-index:50;
+}
+.dict-bar.recording{border-color:rgba(56,189,248,.3);box-shadow:0 8px 40px rgba(0,0,0,.4),0 0 30px var(--accent-dim)}
+.dict-bar .wave{display:flex;align-items:center;gap:2px;height:24px;opacity:0;transition:opacity .2s}
+.dict-bar.recording .wave{opacity:1}
+.dict-bar .wave i{
+  display:block;width:2.5px;border-radius:2px;background:var(--accent);
+  animation:pulse-bar .6s ease-in-out infinite alternate;
+}
+.dict-bar .wave i:nth-child(1){height:6px;animation-delay:0s}
+.dict-bar .wave i:nth-child(2){height:14px;animation-delay:.07s}
+.dict-bar .wave i:nth-child(3){height:20px;animation-delay:.14s}
+.dict-bar .wave i:nth-child(4){height:10px;animation-delay:.21s}
+.dict-bar .wave i:nth-child(5){height:16px;animation-delay:.1s}
+.dict-bar .wave i:nth-child(6){height:8px;animation-delay:.18s}
+@keyframes pulse-bar{0%{transform:scaleY(.3);opacity:.4}100%{transform:scaleY(1);opacity:1}}
+
+.dict-bar .label{font-size:12px;color:var(--text3);font-weight:500;transition:color .2s}
+.dict-bar.recording .label{color:var(--accent)}
+.dict-bar .time{font-family:var(--font-mono);font-size:11px;color:var(--text4);min-width:36px}
+
+.dict-bar .rec-btn{
+  width:36px;height:36px;border-radius:50%;border:none;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .2s var(--ease);position:relative;
+}
+.dict-bar .rec-btn.idle{background:var(--surface2);color:var(--text3)}
+.dict-bar .rec-btn.idle:hover{background:var(--accent-dim);color:var(--accent)}
+.dict-bar .rec-btn.active{background:var(--rose);color:#fff;animation:rec-pulse 1.5s infinite}
+@keyframes rec-pulse{0%,100%{box-shadow:0 0 0 0 rgba(251,113,133,.4)}50%{box-shadow:0 0 0 8px rgba(251,113,133,0)}}
+.dict-bar .rec-btn svg{width:16px;height:16px}
+
+/* ─── Context Panel (right slide) ─── */
+.ctx-toggle{
+  position:absolute;top:50%;right:0;transform:translateY(-50%);
+  width:20px;height:48px;border-radius:8px 0 0 8px;
+  background:var(--surface);border:1px solid var(--border);border-right:none;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;color:var(--text4);font-size:10px;z-index:10;
+  transition:all .15s;
+}
+.ctx-toggle:hover{background:var(--surface2);color:var(--text2)}
+.ctx-panel{
+  position:absolute;top:0;right:0;bottom:0;width:280px;
+  background:var(--bg2);border-left:1px solid var(--border);
+  transform:translateX(100%);transition:transform .25s var(--ease);
+  display:flex;flex-direction:column;z-index:20;
+}
+.ctx-panel.open{transform:translateX(0)}
+.ctx-hd{padding:14px 16px 10px;font-size:10px;font-weight:600;color:var(--text4);text-transform:uppercase;letter-spacing:.8px;border-bottom:1px solid var(--border)}
+.ctx-scroll{flex:1;overflow-y:auto;padding:12px 14px}
+.ctx-section{margin-bottom:14px}
+.ctx-section-title{font-size:10px;font-weight:500;color:var(--text4);margin-bottom:6px;display:flex;align-items:center;gap:5px}
+.ctx-section-title .dot{width:4px;height:4px;border-radius:50%;background:var(--accent)}
+.ctx-chips{display:flex;flex-wrap:wrap;gap:4px}
+.ctx-chip{
+  padding:4px 10px;border-radius:14px;font-size:11px;
+  background:var(--surface);color:var(--text3);border:1px solid var(--border);
+  cursor:pointer;transition:all .12s var(--ease);user-select:none;
+}
+.ctx-chip:hover{background:var(--accent-dim);color:var(--accent);border-color:rgba(56,189,248,.2);transform:translateY(-1px)}
+.ctx-chip:active{transform:translateY(0) scale(.96);background:var(--accent);color:var(--bg)}
+.ctx-presets{margin-top:4px}
+.ctx-pre{
+  padding:7px 10px;border-radius:6px;font-size:11.5px;
+  color:var(--text3);background:var(--amber-dim);border:1px solid rgba(251,191,36,.06);
+  cursor:pointer;margin-bottom:4px;transition:all .12s var(--ease);
+  line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;
+}
+.ctx-pre:hover{background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.15);color:var(--amber);transform:translateX(2px)}
+.ctx-pre:active{transform:translateX(0);background:var(--amber);color:var(--bg)}
+.ctx-add{
+  margin-top:8px;width:100%;padding:6px;border-radius:6px;font-size:10px;
+  color:var(--text4);border:1px dashed var(--border);background:transparent;
+  cursor:pointer;text-align:center;transition:all .15s;
+}
+.ctx-add:hover{color:var(--amber);border-color:rgba(251,191,36,.2)}
+
+/* ─── Status Bar ─── */
+.statusbar{
+  display:flex;align-items:center;padding:5px 20px;gap:14px;
+  background:var(--bg2);border-top:1px solid var(--border);
+  font-size:10.5px;color:var(--text4);
+}
+.statusbar .live{display:flex;align-items:center;gap:5px}
+.statusbar .live-dot{width:5px;height:5px;border-radius:50%;background:var(--emerald);animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.statusbar .sep{width:1px;height:10px;background:var(--border)}
+.statusbar .right{margin-left:auto;display:flex;align-items:center;gap:12px}
+.statusbar .field-indicator{color:var(--accent);font-weight:500}
+.statusbar kbd{
+  padding:1px 5px;border-radius:3px;font-family:var(--font-mono);font-size:9px;
+  background:var(--surface);border:1px solid var(--border);color:var(--text4);
+}
+
+/* ─── Scrollbar ─── */
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg4);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--text4)}
+
+/* ─── Transitions ─── */
+.fade-in{animation:fadeIn .4s var(--ease-out)}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+</style>
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="app">
+  <!-- ═══ Top Bar ═══ -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">星</div>
+      <span class="brand-name">星衍AI</span>
+      <span class="brand-ver">v2.1</span>
+    </div>
+    <select id="deptSelect">
+      <option>内科</option><option>外科</option><option>妇产科</option><option>儿科</option><option>全科</option>
+    </select>
+    <select id="tplSelect" style="min-width:150px">
+      <option>入院记录</option><option>首次病程记录</option><option>日常病程记录</option><option>出院记录</option>
+    </select>
+    <div class="spacer"></div>
+    <button class="act" id="sidebarToggle" title="切换侧栏">☰</button>
+    <button class="act">💡 问答</button>
+    <button class="act">📝 模板</button>
+    <button class="act primary">💾 保存</button>
+  </header>
+
+  <!-- ═══ Main ══ -->
+  <div class="main" id="mainGrid">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-hd">病历模板</div>
+      <div class="sidebar-list">
+        <div class="sidebar-item active"><span class="ico">📋</span>入院记录</div>
+        <div class="sidebar-item"><span class="ico">📝</span>首次病程</div>
+        <div class="sidebar-item"><span class="ico">📄</span>首页病程</div>
+        <div class="sidebar-item"><span class="ico">📃</span>日常病程</div>
+        <div class="sidebar-item"><span class="ico">🏥</span>出院记录</div>
+        <div class="sidebar-item"><span class="ico">🔄</span>转科记录</div>
+        <div class="sidebar-item"><span class="ico">👥</span>会诊记录</div>
+        <div class="sidebar-item"><span class="ico">🚨</span>抢救记录</div>
+        <div class="sidebar-sep"></div>
+        <div class="sidebar-item"><span class="ico">❤️</span>高血压病<span class="tag">常见</span></div>
+        <div class="sidebar-item"><span class="ico">🩸</span>2型糖尿病<span class="tag">常见</span></div>
+        <div class="sidebar-item"><span class="ico">💓</span>冠心病<span class="tag">常见</span></div>
+        <div class="sidebar-item"><span class="ico">🫁</span>社区获得性肺炎<span class="tag">常见</span></div>
+        <div class="sidebar-item"><span class="ico">🧠</span>脑梗死<span class="tag">常见</span></div>
+        <div class="sidebar-item"><span class="ico">🌬</span>COPD急性加重<span class="tag">常见</span></div>
+      </div>
+    </aside>
+
+    <!-- Editor Zone -->
+    <div class="editor-zone">
+      <!-- Field Navigation -->
+      <nav class="field-nav" id="fieldNav">
+        <span class="field-pill active">主诉</span>
+        <span class="field-pill">现病史</span>
+        <span class="field-pill">既往史</span>
+        <span class="field-pill">个人史</span>
+        <span class="field-pill">婚育史</span>
+        <span class="field-pill">家族史</span>
+        <span class="field-pill">体格检查</span>
+        <span class="field-pill">辅助检查</span>
+        <span class="field-pill">初步诊断</span>
+        <span class="field-pill">诊疗计划</span>
+      </nav>
+
+      <!-- Editor -->
+      <div class="editor-scroll">
+        <div class="editor" id="editor" contenteditable="true" spellcheck="false">
+          <div><span class="fl">姓名：</span><span class="val">张三</span>&emsp;&emsp;<span class="fl">性别：</span><span class="val">男</span>&emsp;&emsp;<span class="fl">年龄：</span><span class="val">58岁</span>&emsp;&emsp;<span class="fl">民族：</span><span class="val">汉族</span></div>
+          <div><span class="fl">出生地：</span><span class="val">山东省济南市</span>&emsp;&emsp;<span class="fl">职业：</span><span class="val">退休教师</span></div>
+          <div><span class="fl">入院时间：</span><span class="val">2026-07-25 14:30</span>&emsp;&emsp;<span class="fl">入院方式：</span><span class="val">步行入院</span></div>
+          <div class="gap"></div>
+          <div><span class="fl active">主诉：</span><span class="val">发现血压升高10年，头晕3天。</span></div>
+          <div class="gap"></div>
+          <div><span class="fl">现病史：</span><span class="val">患者10年前体检时发现血压升高，最高达170/100mmHg，当时无头晕、头痛、心悸、胸闷等不适，未予重视及系统治疗。3天前无明显诱因出现头晕，呈持续性胀痛，伴视物模糊，无恶心呕吐，无肢体麻木无力，无胸痛胸闷，休息后症状无明显缓解，为求进一步诊治来我院，门诊以"高血压病"收入我科。发病以来，精神、饮食、睡眠尚可，大小便正常，体重无明显变化。</span></div>
+          <div class="gap"></div>
+          <div><span class="fl">既往史：</span><span class="val empty">语音录入或选择右侧常用句…</span></div>
+          <div class="gap"></div>
+          <div><span class="fl">个人史：</span><span class="val empty">语音录入或选择右侧常用句…</span></div>
+          <div class="gap"></div>
+          <div><span class="fl">体格检查：</span><span class="val empty">语音录入或选择右侧常用句…</span></div>
+          <div class="gap"></div>
+          <div><span class="fl">辅助检查：</span><span class="val empty">语音录入或选择右侧常用句…</span></div>
+          <div class="gap"></div>
+          <div><span class="fl">初步诊断：</span><span class="val empty">语音录入或选择右侧常用句…</span></div>
+        </div>
+      </div>
+
+      <!-- Floating Dictation Bar -->
+      <div class="dict-bar" id="dictBar">
+        <div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <span class="label" id="dictLabel">按 F5 开始语音录入</span>
+        <span class="time" id="dictTime"></span>
+        <button class="rec-btn idle" id="recBtn" title="开始/停止录音 (F5)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+        </button>
+      </div>
+
+      <!-- Context Panel Toggle -->
+      <div class="ctx-toggle" id="ctxToggle">◀</div>
+
+      <!-- Context Panel -->
+      <div class="ctx-panel" id="ctxPanel">
+        <div class="ctx-hd">常用词 · 主诉</div>
+        <div class="ctx-scroll">
+          <div class="ctx-section">
+            <div class="ctx-section-title"><span class="dot"></span>时间词</div>
+            <div class="ctx-chips">
+              <span class="ctx-chip">X年</span><span class="ctx-chip">X天</span><span class="ctx-chip">X小时</span>
+              <span class="ctx-chip">X月</span><span class="ctx-chip">反复发作</span><span class="ctx-chip">持续性</span>
+            </div>
+          </div>
+          <div class="ctx-section">
+            <div class="ctx-section-title"><span class="dot"></span>症状词</div>
+            <div class="ctx-chips">
+              <span class="ctx-chip">头痛</span><span class="ctx-chip">头晕</span><span class="ctx-chip">视物模糊</span>
+              <span class="ctx-chip">耳鸣</span><span class="ctx-chip">心悸</span><span class="ctx-chip">胸闷</span>
+              <span class="ctx-chip">气短</span><span class="ctx-chip">乏力</span><span class="ctx-chip">恶心呕吐</span>
+              <span class="ctx-chip">肢体麻木</span>
+            </div>
+          </div>
+          <div class="ctx-section">
+            <div class="ctx-section-title"><span class="dot"></span>修饰词</div>
+            <div class="ctx-chips">
+              <span class="ctx-chip">反复</span><span class="ctx-chip">加重</span><span class="ctx-chip">缓解</span>
+              <span class="ctx-chip">无明显诱因</span><span class="ctx-chip">受凉后</span><span class="ctx-chip">劳累后</span>
+              <span class="ctx-chip">阵发性</span><span class="ctx-chip">间歇性</span>
+            </div>
+          </div>
+          <div class="ctx-section ctx-presets">
+            <div class="ctx-section-title" style="color:var(--amber)">📝 常用句</div>
+            <div class="ctx-pre">反复头痛头晕X年，加重X天</div>
+            <div class="ctx-pre">发现血压升高X年，头晕X天</div>
+            <div class="ctx-pre">反复胸闷胸痛X年，加重X天</div>
+            <div class="ctx-pre">咳嗽咳痰X天，伴发热X天</div>
+            <div class="ctx-pre">突发右侧肢体无力X小时</div>
+            <div class="ctx-pre">头晕伴视物旋转X天</div>
+            <button class="ctx-add">＋ 添加常用句</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══ Status Bar ═══ -->
+  <footer class="statusbar">
+    <div class="live"><span class="live-dot"></span>模型就绪</div>
+    <span class="sep"></span>
+    <span>热词 2,989</span>
+    <span class="sep"></span>
+    <span>图谱 27,947</span>
+    <span class="sep"></span>
+    <span>说明书 14,045</span>
+    <div class="right">
+      <span>字段：<span class="field-indicator" id="statusField">主诉</span></span>
+      <span><kbd>F5</kbd> 录音</span>
+      <span><kbd>⌘S</kbd> 保存</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+// ─── Interactions ───
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+
+// Sidebar toggle
+$('#sidebarToggle').addEventListener('click', () => {
+  $('#mainGrid').classList.toggle('sidebar-collapsed');
+});
+
+// Context panel toggle
+$('#ctxToggle').addEventListener('click', () => {
+  const panel = $('#ctxPanel');
+  panel.classList.toggle('open');
+  $('#ctxToggle').textContent = panel.classList.contains('open') ? '▶' : '◀';
+});
+
+// Field pills
+$$('.field-pill').forEach(pill => {
+  pill.addEventListener('click', () => {
+    $$('.field-pill').forEach(p => p.classList.remove('active'));
+    pill.classList.add('active');
+    const name = pill.textContent;
+    $('#statusField').textContent = name;
+    // Highlight in editor
+    $$('.editor .fl').forEach(fl => fl.classList.remove('active'));
+    $$('.editor .fl').forEach(fl => { if (fl.textContent.startsWith(name)) fl.classList.add('active'); });
+  });
+});
+
+// Sidebar items
+$$('.sidebar-item').forEach(item => {
+  item.addEventListener('click', () => {
+    $$('.sidebar-item').forEach(i => i.classList.remove('active'));
+    item.classList.add('active');
+  });
+});
+
+// Chips click feedback
+$$('.ctx-chip').forEach(chip => {
+  chip.addEventListener('click', () => {
+    chip.style.background = 'var(--accent)';
+    chip.style.color = 'var(--bg)';
+    chip.style.borderColor = 'var(--accent)';
+    setTimeout(() => { chip.style.background = ''; chip.style.color = ''; chip.style.borderColor = ''; }, 200);
+  });
+});
+
+// Presets click feedback
+$$('.ctx-pre').forEach(pre => {
+  pre.addEventListener('click', () => {
+    pre.style.background = 'var(--amber)';
+    pre.style.color = 'var(--bg)';
+    setTimeout(() => { pre.style.background = ''; pre.style.color = ''; }, 250);
+  });
+});
+
+// Recording toggle
+let recording = false;
+let recTimer = null;
+let seconds = 0;
+$('#recBtn').addEventListener('click', toggleRec);
+document.addEventListener('keydown', e => { if (e.key === 'F5') { e.preventDefault(); toggleRec(); }});
+
+function toggleRec() {
+  recording = !recording;
+  const bar = $('#dictBar');
+  const btn = $('#recBtn');
+  const label = $('#dictLabel');
+  const time = $('#dictTime');
+  if (recording) {
+    bar.classList.add('recording');
+    btn.classList.remove('idle');
+    btn.classList.add('active');
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>';
+    label.textContent = '正在聆听 · ' + ($('.field-pill.active')?.textContent || '');
+    seconds = 0;
+    recTimer = setInterval(() => {
+      seconds++;
+      time.textContent = String(Math.floor(seconds/60)).padStart(2,'0') + ':' + String(seconds%60).padStart(2,'0');
+    }, 1000);
+  } else {
+    bar.classList.remove('recording');
+    btn.classList.remove('active');
+    btn.classList.add('idle');
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
+    label.textContent = '按 F5 开始语音录入';
+    time.textContent = '';
+    clearInterval(recTimer);
+  }
+}
+
+// Editor placeholder
+const editor = $('#editor');
+editor.addEventListener('focus', function once() {
+  editor.querySelectorAll('.val.empty').forEach(el => {
+    el.addEventListener('click', function() {
+      if (this.classList.contains('empty')) {
+        this.textContent = '';
+        this.classList.remove('empty');
+      }
+    });
+  });
+  editor.removeEventListener('focus', once);
+});
+</script>
+</body>
+</html>
