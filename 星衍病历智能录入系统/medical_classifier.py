@@ -369,6 +369,20 @@ class MedicalClassifier:
         },
     }
 
+    # 隐式信号表：无显式字段标记的分句按表述习惯归位（按顺序匹配，先匹配先得）
+    # 注意：家族史必须在既往史之前，否则"否认家族史"会被既往史的"否认...史"抢走
+    _IMPLICIT_SIGNALS = [
+        ("家族史", re.compile(
+            r'家族|遗传|父母|父亲|母亲|兄弟姐妹|祖父母|外祖父母|叔伯|姑舅|否认家')),
+        ("个人史", re.compile(
+            r'吸烟史|吸烟|抽烟|烟瘾|饮酒史|饮酒|喝酒|酒瘾|嗜烟酒?'
+            r'|疫区|毒物接触|放射线|粉尘|化学品|无冶游|冶游史|不洁性生活')),
+        ("月经史", re.compile(r'月经|绝经|初潮|经期|末次月经')),
+        ("婚育史", re.compile(r'婚育|育有|已婚已育|未婚未育|离异|丧偶|生育|孕\d|产\d')),
+        ("既往史", re.compile(
+            r'既往|否认.{0,12}(?:病史|史)|过敏史|过敏|手术史|外伤史|输血史|预防接种史')),
+    ]
+
     # 字段关键词映射（用于从连续文本中提取字段内容）
     FIELD_KEYWORDS = {
         "姓名": ["姓名", "叫啥", "名字"],
@@ -437,25 +451,28 @@ class MedicalClassifier:
         if not text or not text.strip():
             return None, 0.0
 
-        text = text.strip()
-        scores = {}
-
-        for field, patterns in self.compiled_patterns.items():
-            score = self._calculate_score(text, field, patterns)
-            scores[field] = score
+        scored = self.score_fields(text)
 
         # 返回得分最高的字段
-        if not scores:
+        if not scored:
             return "主诉", 0.5
 
-        best_field = max(scores, key=scores.get)
-        best_score = scores[best_field]
+        best_field, best_score = scored[0]
 
         # 如果最高分太低，默认归为主诉
         if best_score < 0.3:
             return "主诉", best_score
 
         return best_field, best_score
+
+    def score_fields(self, text):
+        """返回文本在各字段下的得分，按降序排列 [(字段名, 得分), ...]"""
+        if not text or not text.strip():
+            return []
+        scores = {}
+        for field, patterns in self.compiled_patterns.items():
+            scores[field] = self._calculate_score(text, field, patterns)
+        return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     def _calculate_score(self, text, field, patterns):
         """计算文本属于某字段的得分"""
@@ -604,21 +621,21 @@ class MedicalClassifier:
         """
         result = {}
 
-        # 姓名：我叫X / 名字叫X / 我是X / 患者叫X / 患者名叫X / 姓名：X
-        # 先尝试显式字段（归一化后的文本）
+        # 姓名：我叫X / 名字叫X / 我是X / 患者叫X / 患者名叫X / 姓名：X / 患者X（后跟男/女）
+        # 先尝试显式字段（归一化后的文本）；捕获组排除男/女开头，避免"患者男性"被当成姓名
         name_match = re.search(
-            r'(?:姓名[：:\s]*|我叫|名字叫|名字是|患者名?叫|患者是)\s*([一-鿿]{2,4}?)(?=\s*[，,。]?\s*(?:性别|年龄|民族|婚姻|出生地|职业|入院|病史|主诉|现病史|[，,。\s]|$))',
+            r'(?:姓名[：:\s]*|我叫|名字叫|名字是|患者名?叫|患者是|患者)\s*((?![男女])[一-鿿]{2,4}?)(?=\s*[，,。]?\s*(?:性别|年龄|民族|婚姻|出生地|职业|入院|病史|主诉|现病史|[男女]|[，,。\s]|$))',
             text
         )
-        if name_match:
+        if name_match and name_match.group(1) not in ('本人', '家属', '老人', '既往', '否认'):
             result['姓名'] = name_match.group(1)
         else:
-            # 启发式：文本开头是2-4个中文字符，后面紧跟字段关键词，可能是姓名
+            # 启发式：文本开头是2-4个中文字符，后面紧跟字段关键词或男/女，可能是姓名
             head_name = re.match(
-                r'^([\u4e00-\u9fff]{2,4})\s*[，,]?\s*(?=性别|年龄|民族|婚姻|出生地|职业|入院|病史|主诉|现病史)',
+                r'^((?![男女患])[一-鿿]{2,4})\s*[，,]?\s*(?=性别|年龄|民族|婚姻|出生地|职业|入院|病史|主诉|现病史|男|女)',
                 text
             )
-            if head_name:
+            if head_name and head_name.group(1) not in ('患者', '病人', '本人'):
                 result['姓名'] = head_name.group(1)
 
         # 性别：男/女性，或"性别男/女"，或"男性/女性患者"
@@ -654,6 +671,14 @@ class MedicalClassifier:
         )
         if ethnic_match:
             result['民族'] = ethnic_match.group(1) + '族'
+        else:
+            # 裸写民族（不带"族"字）：如"民族汉""民族：回"
+            ethnic_bare = re.search(
+                r'民族[：:\s]*(汉|回|藏|满|蒙古|壮|维吾尔|苗|彝|土家|朝鲜|侗|瑶|白)(?=[，,。\s]|$)',
+                text
+            )
+            if ethnic_bare:
+                result['民族'] = ethnic_bare.group(1) + '族'
 
         # 婚姻状况：已婚/未婚/离婚/丧偶
         marriage_match = re.search(
@@ -662,6 +687,16 @@ class MedicalClassifier:
         )
         if marriage_match:
             result['婚姻状况'] = marriage_match.group(1)
+
+        # 职业：常见职业词独立出现（如"农民""职业：教师""已退休"）
+        occupation_match = re.search(
+            r'(?:职业[：:\s]*)?'
+            r'(农民|务农|工人|教师|医生|护士|公务员|退休人员|退休|学生|干部|军人|警察|司机|会计|个体户|个体经营|自由职业|无业|家务|商人|职员|工程师|厨师|保安|保洁)'
+            r'(?=[，,。\s]|$)',
+            text
+        )
+        if occupation_match:
+            result['职业'] = occupation_match.group(1)
 
         # 入院方式：必须是"关键词+入院"格式，避免把单独的"入院"误匹配
         # 使用捕获组提取关键词，确保是"XXX入院"而非单独的"入院"
@@ -800,38 +835,101 @@ class MedicalClassifier:
                 filled.add(field)
 
         # 2. 解析新文本中的显式字段标记（如"主诉：发热三天"）
+        #    section 内部再按隐式信号路由：如既往史段落里混入的"家族中多人患高血压"归到家族史
         sections = parser.parse(new_text)
+        # 判断是否有显式字段标记：无标记时 parse 会把整段兜底归入"主诉"，
+        # 此时若主诉已填，该段文本不能当作已处理移除，需留给分类器智能定位
+        has_explicit_mark = bool(parser._find_boundaries(new_text))
         for field, content in sections.items():
             std_field = self._standardize_field(field)
-            if std_field in empty_fields and std_field not in filled and content.strip():
-                result = self._replace_field(result, std_field, content.strip())
-                filled.add(std_field)
+            # 无字段标记时 parse 兜底归入"主诉"的内容不直接填主诉，
+            # 统一留给分类器智能定位（如"高血压十年"应归既往史、"体温36.5度"应归体格检查）
+            if not has_explicit_mark and std_field == "主诉":
+                continue
+            if std_field not in empty_fields or std_field in filled or not content.strip():
+                continue
+            kept, routed = self._route_implicit_clauses(content, std_field, empty_fields, filled)
+            for target, cls in routed.items():
+                result = self._replace_field(result, target, '，'.join(cls))
+                filled.add(target)
+            if kept:
+                joined = '，'.join(kept)
+                if std_field == "主诉":
+                    joined = self._extract_chief_complaint(joined)
+                if joined.strip():
+                    result = self._replace_field(result, std_field, joined.strip())
+                    filled.add(std_field)
 
         # 2. 分类器：对无显式标记的段落做智能分类
         # 移除已被 parser.parse 处理的文本片段，只对真正剩余的内容做分类
         remaining_text = new_text
         for field, content in sections.items():
-            if content:
-                remaining_text = remaining_text.replace(content, "")
-        # 也移除字段关键词本身
+            std_field = self._standardize_field(field)
+            if not content:
+                continue
+            # 无标记兜底归入"主诉"的内容一律保留，留给分类器重新定位
+            if not has_explicit_mark and std_field == "主诉":
+                continue
+            remaining_text = remaining_text.replace(content, "")
+        # 也移除字段关键词本身（仅移除作为字段边界出现的关键词：前无汉字且后跟冒号/空白/结尾，
+        # 避免误伤正文用词，如"舌质红"中的"舌质"、"脉搏"中的"脉"）
         for kw in parser.sorted_keywords:
-            remaining_text = remaining_text.replace(kw, "")
+            if len(kw) < 2:
+                continue
+            remaining_text = re.sub(
+                r'(?<![一-鿿])' + re.escape(kw) + r'(?=[：:\s]|$)',
+                '', remaining_text
+            )
         # 清理标点和空白
         remaining_text = re.sub(r'[：:\s，,。、]+', ' ', remaining_text).strip()
 
+        # 2.5 隐式信号二次切分：无显式字段标记的分句按表述习惯直接归位
+        #     例："家族中多人患高血压" → 家族史；"吸烟30年" → 个人史
+        #     注：上方已把标点统一为空格，按空白切分分句
+        clauses = [cl.strip() for cl in re.split(r'\s+', remaining_text) if cl.strip()]
+        implicit = {}
+        leftover = []
+        for cl in clauses:
+            matched = None
+            for field, pat in self._IMPLICIT_SIGNALS:
+                if field in empty_fields and field not in filled and pat.search(cl):
+                    matched = field
+                    break
+            if matched:
+                implicit.setdefault(matched, []).append(cl)
+            else:
+                leftover.append(cl)
+        for field, cls in implicit.items():
+            result = self._replace_field(result, field, '，'.join(cls))
+            filled.add(field)
+
+        # 重新拼回剩余文本，供分类器处理
+        remaining_text = '，'.join(leftover)
+
+        # 3. 分类器：对无显式标记的段落做智能分类
         paragraphs = [p.strip() for p in re.split(r'[。\n]+', remaining_text) if p.strip()]
         if paragraphs:
-            classified = self.classify_paragraphs(paragraphs)
-            for field, content, confidence in classified:
-                if confidence < 0.2:
-                    continue
-                std_field = self._standardize_field(field)
-                if std_field in empty_fields and std_field not in filled:
+            for para in paragraphs:
+                # 按得分降序尝试各字段，首选字段已填时自动落到次优字段
+                # （如多轮录音中主诉已填，"三天前受凉后发热"应落入现病史）
+                for std_field, confidence in self.score_fields(para):
+                    if confidence < 0.2:
+                        break
+                    # 字段必须是模板空字段，或本轮已填充过的字段（同段内容合并追加）
+                    if std_field not in empty_fields and std_field not in filled:
+                        continue
+                    content = para
                     if std_field == "主诉" and ('入院' in content or re.search(r'\d{4}\s*年', content)):
                         content = self._extract_chief_complaint(content)
+                    if std_field in filled:
+                        # 本轮已填过该字段（如同段隐式信号先路由了部分内容），合并追加
+                        prev = self._get_field_value(result, std_field)
+                        if prev:
+                            content = prev + '，' + content
                     if content.strip():
                         result = self._replace_field(result, std_field, content.strip())
                         filled.add(std_field)
+                    break
 
         # 4. 关键词直接匹配（兜底，仅填空字段）
         for field in empty_fields:
@@ -843,6 +941,39 @@ class MedicalClassifier:
                 filled.add(field)
 
         return result
+
+    def _get_field_value(self, template_text, field):
+        """读取模板中某字段当前已填的内容（无内容返回空串）"""
+        pattern = re.compile(
+            re.escape(field) + r'[：: \t]*([^：:\n]*?)(?=\s*[\u4e00-\u9fff]{1,10}[：:]|\s*[\n]|\s*$)',
+            re.MULTILINE
+        )
+        match = pattern.search(template_text)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+    def _route_implicit_clauses(self, content, own_field, empty_fields, filled):
+        """
+        把 section 内容按逗号切成小句，带其他字段隐式信号的小句路由到对应字段。
+        例：既往史段落中的"家族中多人患高血压"路由到家族史，其余保留在既往史。
+        返回：(保留的小句列表, {目标字段: [小句]})
+        """
+        clauses = [cl.strip() for cl in re.split(r'[，,；;。]+', content) if cl.strip()]
+        kept, routed = [], {}
+        for cl in clauses:
+            target = None
+            for field, pat in self._IMPLICIT_SIGNALS:
+                if field == own_field:
+                    break  # 命中本字段信号，保留在原地
+                if field in empty_fields and field not in filled and pat.search(cl):
+                    target = field
+                    break
+            if target:
+                routed.setdefault(target, []).append(cl)
+            else:
+                kept.append(cl)
+        return kept, routed
 
     def _is_field_empty(self, template_text, field):
         """检查模板中某字段是否为空（无实际内容），支持同行多字段"""
@@ -868,6 +999,10 @@ class MedicalClassifier:
         )
         # 再去掉"入院时间"前缀
         cleaned = re.sub(r'入院\s*时间\s*[是为：:]?\s*', '', cleaned)
+        # "因X入院/就诊" → 只保留症状部分 X（如"因胸痛2小时入院" → "胸痛2小时"）
+        because_match = re.search(r'因\s*([^，。,；;]{2,30}?)\s*(?:入院|就诊|来院|住院)', cleaned)
+        if because_match:
+            cleaned = because_match.group(1)
         # 清理分隔符和空白
         cleaned = re.sub(r'^[，,、\s]+', '', cleaned)
         cleaned = re.sub(r'[，,、\s]+$', '', cleaned)

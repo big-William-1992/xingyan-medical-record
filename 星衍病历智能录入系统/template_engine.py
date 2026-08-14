@@ -41,13 +41,19 @@ class TemplateEngine:
             else:
                 grouped.setdefault(base, []).append((None, data))
 
-        # 合并：主科室 + 子科室模板
+        # 合并：主科室 + 子科室模板（主文件优先，子科室同名模板跳过避免重复）
         for main_dept, items in grouped.items():
+            # 主文件（无变体标签）排前面，确保同名时主文件版本胜出
+            items.sort(key=lambda x: 0 if x[0] is None else 1)
             merged_templates = []
+            seen_names = set()
             for label, data in items:
                 tpls = data.get("templates", [])
                 if label is None:
-                    merged_templates.extend(tpls)
+                    for t in tpls:
+                        if t.get("name") not in seen_names:
+                            seen_names.add(t.get("name"))
+                            merged_templates.append(t)
                 else:
                     # 子科室模板名前加【标签】前缀
                     for t in tpls:
@@ -55,6 +61,9 @@ class TemplateEngine:
                         # 避免重复加前缀
                         if not name.startswith(f"【{label}】"):
                             name = f"【{label}】{name}"
+                        if name in seen_names:
+                            continue  # 主文件已含同名模板（如内科.json自带【中医】模板）
+                        seen_names.add(name)
                         merged_templates.append({"name": name, "content": t.get("content", "")})
             self.templates[main_dept] = {"templates": merged_templates}
 

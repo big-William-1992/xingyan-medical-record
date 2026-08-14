@@ -28,6 +28,7 @@ class MedicalKnowledgeGraph:
         self._rel_by_subj = {}   # 主体 → [(rel, obj)] 正向索引
         self._rel_by_obj = {}    # 客体 → [(rel, subj)] 反向索引
         self.drug_inserts = {}   # 药物名 → 说明书信息
+        self.laws = {}           # 法律名 → 法律信息（含条文索引）
         self.aliases = {}        # 别名 → 标准实体名
         # 外部知识（OpenKG/CMeKG 等）导入目录，默认 ./kg_data
         self.external_dir = external_dir or os.path.join(
@@ -37,6 +38,8 @@ class MedicalKnowledgeGraph:
         self._load_external_kg()
         # 加载批量下载的药品说明书
         self._load_drug_inserts()
+        # 加载法律法规知识库（执业医师法 / 刑法医疗条款）
+        self._load_legal_kb()
 
     def _build_graph(self):
         """构建知识图谱"""
@@ -827,6 +830,60 @@ class MedicalKnowledgeGraph:
                 print(f"[KG] 药品说明书加载: {count} 种 (总计 {len(self.drug_inserts)})")
         except Exception as e:
             print(f"[KG] 加载药品说明书失败: {e}")
+
+    def _load_legal_kb(self):
+        """加载法律法规知识库（kg_data/legal_kb.json）
+
+        schema: {"laws": {"法律名": {"full_name", "aliases", "status", "note",
+                                        "summary", "chapters": [{"title", "articles":
+                                        [{"no", "title", "content"}]}]}}}
+        加载后为每部法律构建 articles_index 条文索引。
+        """
+        path = os.path.join(self.external_dir, "legal_kb.json")
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            total = 0
+            for name, info in (data.get("laws") or {}).items():
+                if not isinstance(info, dict) or name in self.laws:
+                    continue
+                info = dict(info)
+                index = []
+                for ch in info.get("chapters") or []:
+                    chapter = ch.get("title", "")
+                    for art in ch.get("articles") or []:
+                        index.append({
+                            "law": name,
+                            "full_name": info.get("full_name", name),
+                            "chapter": chapter,
+                            "no": art.get("no", ""),
+                            "title": art.get("title", ""),
+                            "content": art.get("content", ""),
+                        })
+                        total += 1
+                info["articles_index"] = index
+                self.laws[name] = info
+            if total:
+                print(f"[KG] 法律法规加载: {len(self.laws)} 部, {total} 条")
+        except Exception as e:
+            print(f"[KG] 加载法律法规失败: {e}")
+
+    def get_law_article(self, law_key, article_no):
+        """按条号返回某部法律的条文，未指定法律时在全库中查找"""
+        keys = [law_key] if law_key in self.laws else list(self.laws.keys())
+        for k in keys:
+            for art in self.laws[k].get("articles_index", []):
+                if art["no"] == article_no:
+                    return art
+        # 兜底：去掉“第/条”比较（如“第三百三十五条”与“第三三五条”）
+        normalized = article_no.replace("第", "").replace("条", "")
+        for k in keys:
+            for art in self.laws[k].get("articles_index", []):
+                if art["no"].replace("第", "").replace("条", "") == normalized:
+                    return art
+        return None
 
     def get_drug_info(self, drug):
         """返回药物说明书信息（适应症/用法用量/禁忌/不良反应），无则 None"""

@@ -11,10 +11,197 @@ import wave
 import numpy as np
 
 from PyQt5.QtWidgets import (
-    QWidget, QHBoxLayout, QPushButton, QSlider, QLabel
+    QWidget, QHBoxLayout, QPushButton, QSlider, QLabel,
+    QFrame, QVBoxLayout, QTextBrowser, QGraphicsOpacityEffect
 )
-from PyQt5.QtCore import Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QPainter, QColor, QPen
+
+
+# ═══════════════════════════════════════════════════════════
+#  悬浮识别预览面板
+# ═══════════════════════════════════════════════════════════
+
+class AsrPreviewPanel(QFrame):
+    """
+    悬浮识别预览面板（PyQt5 原生版）
+    - 录音中：show_partial() 实时刷新识别文本（红色指示灯，无按钮）
+    - 识别完成：show_result() 显示最终文本 + 接受/拒绝/重听按钮
+    确认后发出 accepted / rejected / retried 信号，由主窗口处理。
+    """
+    accepted = pyqtSignal()
+    rejected = pyqtSignal()
+    retried = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setFixedWidth(620)
+        self.setVisible(False)
+        self._build_ui()
+        # 淡入淡出动画
+        self._effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self._effect)
+        self._effect.setOpacity(1.0)
+        self._anim = None
+
+    def _build_ui(self):
+        # 外层容器：半透明玻璃背景 + 圆角边框
+        outer = QFrame(self)
+        outer.setObjectName("asrPreviewPanel")
+        outer.setStyleSheet("""
+            #asrPreviewPanel {
+                background: rgba(16, 22, 42, 0.94);
+                border: 1px solid rgba(0, 212, 255, 0.35);
+                border-radius: 14px;
+            }
+        """)
+        outer.setGeometry(0, 0, 620, 0)
+        lay = QVBoxLayout(outer)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(8)
+
+        # 标题行：指示灯 + 标题 + 关闭按钮
+        hd = QHBoxLayout()
+        hd.setSpacing(6)
+        self.dot = QLabel("●")
+        self.dot.setStyleSheet("color: #ff5f6d; font-size: 10px;")
+        self.title_label = QLabel("实时识别预览")
+        self.title_label.setStyleSheet("color: #7f8fb2; font-size: 11px; font-weight: bold; letter-spacing: 1px;")
+        hd.addWidget(self.dot)
+        hd.addWidget(self.title_label)
+        hd.addStretch()
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(22, 22)
+        close_btn.setToolTip("关闭预览")
+        close_btn.setStyleSheet("""
+            QPushButton { color: #7f8fb2; background: transparent; border: none;
+                           font-size: 12px; border-radius: 11px; }
+            QPushButton:hover { color: #fff; background: rgba(255,95,109,0.25); }
+        """)
+        close_btn.clicked.connect(self.rejected)
+        hd.addWidget(close_btn)
+        lay.addLayout(hd)
+
+        # 识别文本区（只读，自动滚动到最新）
+        self.text_browser = QTextBrowser()
+        self.text_browser.setStyleSheet("""
+            QTextBrowser {
+                background: rgba(255,255,255,0.04);
+                border: 1px solid rgba(0,212,255,0.15);
+                border-radius: 8px;
+                padding: 8px 10px;
+                font-size: 13px;
+                color: #eef2ff;
+            }
+        """)
+        self.text_browser.setOpenExternalLinks(False)
+        self.text_browser.setOpenLinks(False)
+        self.text_browser.setMaximumHeight(220)
+        lay.addWidget(self.text_browser)
+
+        # 操作按钮行（识别完成后显示）
+        self.actions_bar = QWidget()
+        ab = QHBoxLayout(self.actions_bar)
+        ab.setContentsMargins(0, 0, 0, 0)
+        ab.setSpacing(8)
+        accept_btn = QPushButton("✓ 接受")
+        accept_btn.setStyleSheet("""
+            QPushButton { background: qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 #00d4ff, stop:1 #007aa0);
+                          color: #0a0e27; padding: 6px 18px; border-radius: 8px; font-weight: bold; }
+            QPushButton:hover { background: #00eaff; }
+        """)
+        reject_btn = QPushButton("✗ 拒绝")
+        reject_btn.setStyleSheet("""
+            QPushButton { background: rgba(255,95,109,0.15); color: #ff8a95; padding: 6px 14px;
+                          border: 1px solid rgba(255,95,109,0.4); border-radius: 8px; }
+            QPushButton:hover { background: rgba(255,95,109,0.3); }
+        """)
+        retry_btn = QPushButton("↻ 重听")
+        retry_btn.setStyleSheet("""
+            QPushButton { background: rgba(255,196,0,0.12); color: #ffc44d; padding: 6px 14px;
+                          border: 1px solid rgba(255,196,0,0.4); border-radius: 8px; }
+            QPushButton:hover { background: rgba(255,196,0,0.25); }
+        """)
+        accept_btn.clicked.connect(self.accepted)
+        reject_btn.clicked.connect(self.rejected)
+        retry_btn.clicked.connect(self.retried)
+        ab.addWidget(accept_btn)
+        ab.addWidget(reject_btn)
+        ab.addWidget(retry_btn)
+        ab.addStretch()
+        self.actions_bar.setVisible(False)
+        lay.addWidget(self.actions_bar)
+
+    # ─── 状态切换 ───────────────────────────────
+
+    def _fade(self, show):
+        """淡入/淡出动画"""
+        if self._anim is not None:
+            self._anim.stop()
+        self._anim = QPropertyAnimation(self._effect, b"opacity", self)
+        self._anim.setDuration(160)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._anim.setStartValue(self._effect.opacity())
+        self._anim.setEndValue(1.0 if show else 0.0)
+        if show:
+            self.setVisible(True)
+            self.raise_()
+        self._anim.start()
+        if not show:
+            self._anim.finished.connect(lambda: self.setVisible(False))
+
+    def show_partial(self, text):
+        """录音中：实时刷新识别文本（无按钮）"""
+        if text:
+            self.title_label.setText("实时识别预览")
+            self.dot.setStyleSheet("color: #ff5f6d; font-size: 10px;")
+            self.actions_bar.setVisible(False)
+            self.text_browser.setPlainText(text)
+            self.text_browser.verticalScrollBar().setValue(
+                self.text_browser.verticalScrollBar().maximum())
+            if not self.isVisible():
+                self.reposition()
+                self._fade(True)
+
+    def show_result(self, text):
+        """识别完成：显示最终文本 + 接受/拒绝/重听按钮"""
+        if not text:
+            return
+        self.title_label.setText("识别结果 · 请确认")
+        self.dot.setStyleSheet("color: #00d4ff; font-size: 10px;")
+        self.actions_bar.setVisible(True)
+        self.text_browser.setPlainText(text)
+        self.text_browser.verticalScrollBar().setValue(0)
+        self.reposition()
+        if not self.isVisible():
+            self._fade(True)
+        self.raise_()
+
+    def reset(self):
+        """开始新一次录音前重置面板"""
+        self._pending = ""
+        self.actions_bar.setVisible(False)
+        self.text_browser.clear()
+
+    def hide_panel(self):
+        """隐藏面板"""
+        if self.isVisible():
+            self._fade(False)
+        else:
+            self.setVisible(False)
+
+    def reposition(self):
+        """定位到主窗口底部居中（避开状态栏）"""
+        parent = self.parent()
+        if parent is None:
+            return
+        g = parent.geometry()
+        x = g.center().x() - self.width() // 2
+        y = g.bottom() - self.height() - 46
+        self.move(x, y)
+
 
 
 # ═══════════════════════════════════════════════════════════

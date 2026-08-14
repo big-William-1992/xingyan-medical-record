@@ -17,7 +17,7 @@ class SectionParser:
         "姓名": ["姓名", "姓名:", "姓名：", "名字", "称呼", "名叫"],
         "性别": ["性别", "性别:", "性别：", "男/女", "男性/女性"],
         "年龄": ["年龄", "年龄:", "年龄：", "岁数", "几岁"],
-        "民族": ["民族", "民族:", "民族：", "族", "汉族", "回族"],
+        "民族": ["民族", "民族:", "民族：", "汉族", "回族"],
         "婚姻状况": ["婚姻状况", "婚姻状况:", "婚姻状况：", "婚姻", "婚况"],
         "出生地": ["出生地", "出生地:", "出生地：", "籍贯", "籍贯:" ,"籍贯：", "生于", "老家"],
         "职业": ["职业", "职业:", "职业：", "工作", "从事"],
@@ -322,7 +322,14 @@ class SectionParser:
         occupied_ranges = []
 
         for keyword in self.sorted_keywords:
-            pattern = re.compile(re.escape(keyword) + r'[：: \t]*')
+            # 边界判定：关键词后必须紧跟冒号/空格（normalize_asr_text 已保证标准字段词后补冒号）；
+            # 无冒号时要求关键词前有分隔符（行首/换行/空白/逗号），
+            # 避免句中出现的词（如"否认家族遗传病史"里的"家族遗传"）被误判为字段边界
+            pattern = re.compile(
+                r'(?:(?<![\u4e00-\u9fff])' + re.escape(keyword) + r'[：: \t]+'
+                r'|(?<![\u4e00-\u9fff])' + re.escape(keyword) + r'[：:]'
+                r'|' + re.escape(keyword) + r'[：:])'
+            )
             for match in pattern.finditer(text):
                 pos = match.start()
                 end_pos = match.end()

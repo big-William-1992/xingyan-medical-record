@@ -122,6 +122,14 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
 @keyframes rpulse{0%,100%{box-shadow:0 0 0 0 rgba(251,113,133,.4)}50%{box-shadow:0 0 0 10px rgba(251,113,133,0)}}
 .dict-bar .rec-btn svg{width:18px;height:18px}
 
+/* ─── Live Preview Panel ─── */
+.live-preview{position:absolute;bottom:104px;left:50%;transform:translateX(-50%) translateY(10px);width:min(680px,90%);background:var(--glass);backdrop-filter:var(--glass-blur);border:1px solid var(--border2);border-radius:16px;box-shadow:var(--shadow);padding:12px 18px;z-index:49;opacity:0;pointer-events:none;transition:all .25s var(--ease);display:flex;flex-direction:column;gap:8px}
+.live-preview.show{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}
+.live-preview .lp-hd{display:flex;align-items:center;gap:8px;font-size:10px;font-weight:700;color:var(--text4);letter-spacing:1px}
+.live-preview .lp-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);animation:lpblink 1.2s infinite}
+@keyframes lpblink{0%,100%{opacity:1}50%{opacity:.3}}
+.live-preview .lp-text{font-size:14px;line-height:1.9;color:var(--text1);overflow-y:auto;max-height:24vh;white-space:pre-wrap;word-break:break-all}
+
 /* ─── Context Panel ─── */
 .ctx-toggle{position:absolute;top:50%;right:0;transform:translateY(-50%);width:22px;height:52px;border-radius:10px 0 0 10px;background:var(--glass);backdrop-filter:blur(12px);border:1px solid var(--border);border-right:none;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--text4);font-size:10px;z-index:10;transition:all .15s}
 .ctx-toggle:hover{background:var(--surface2);color:var(--text2)}
@@ -212,6 +220,10 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
       <div class="editor-scroll">
         <div class="editor" id="editor" contenteditable="true" spellcheck="false"></div>
       </div>
+      <div class="live-preview" id="livePreview">
+        <div class="lp-hd"><span class="lp-dot"></span>实时识别预览</div>
+        <div class="lp-text" id="lpText"></div>
+      </div>
       <div class="dict-bar" id="dictBar">
         <div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i></div>
         <span class="label" id="dictLabel">按 F5 开始语音录入</span>
@@ -245,13 +257,15 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
         <button class="qa-close" id="qaClose">✕</button>
       </div>
       <div class="qa-messages" id="qaMessages">
-        <div class="qa-msg bot">你好！我是星衍医学知识助手，可以回答疾病、药物、检查等相关问题。<br><br>试试问我：<br>• 高血压的常用药物<br>• 糖尿病需要做哪些检查<br>• 阿莫西林的禁忌症</div>
+        <div class="qa-msg bot">你好！我是星衍医学知识助手，可以回答疾病、药物、检查、法律法规、案例解读等相关问题。<br><br>试试问我：<br>• 高血压的常用药物<br>• 医师法第九条<br>• 医疗事故怎么鉴定<br>• 医疗事故的经典案例</div>
       </div>
       <div class="qa-suggestions" id="qaSuggestions">
         <span class="qa-sug">高血压治疗方案</span>
         <span class="qa-sug">糖尿病检查项目</span>
         <span class="qa-sug">阿莫西林说明书</span>
-        <span class="qa-sug">冠心病鉴别诊断</span>
+        <span class="qa-sug">医师法第九条</span>
+        <span class="qa-sug">医疗事故怎么鉴定</span>
+        <span class="qa-sug">医疗事故的经典案例</span>
       </div>
       <div class="qa-input-area">
         <input class="qa-input" id="qaInput" placeholder="输入医学问题，回车发送…" autocomplete="off">
@@ -334,8 +348,9 @@ function connectWS(){
   ws.onerror=()=>{};
   ws.onmessage=(e)=>{
     const d=JSON.parse(e.data);
-    if(d.type==='result'&&d.text){fillAndSet(d.text)}
-    else if(d.type==='partial'){$('#dictLabel').textContent='识别中：'+d.text.slice(-30)}
+    if(d.type==='result'&&d.text){hideLivePreview();fillAndSet(d.text)}
+    else if(d.type==='result'){hideLivePreview()}
+    else if(d.type==='partial'&&d.text){showLivePreview(d.text);$('#dictLabel').textContent='识别中 · '+currentField}
   };
 }
 
@@ -381,6 +396,20 @@ function stopRecording(){
   $('#recBtn').classList.remove('active');$('#recBtn').classList.add('idle');
   $('#recBtn').innerHTML='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>';
   $('#dictLabel').textContent='按 F5 开始语音录入';$('#dictTime').textContent='';
+  hideLivePreview();
+}
+
+// ─── Live Preview ───
+let _lpHideTimer=null;
+function showLivePreview(text){
+  const p=$('#livePreview'),t=$('#lpText');
+  p.classList.add('show');
+  t.textContent=text;
+  t.scrollTop=t.scrollHeight; // 自动滚到最新内容
+  if(_lpHideTimer){clearTimeout(_lpHideTimer);_lpHideTimer=null}
+}
+function hideLivePreview(){
+  $('#livePreview').classList.remove('show');
 }
 
 // ─── API Calls ───

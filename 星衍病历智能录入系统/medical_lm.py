@@ -262,22 +262,24 @@ class MedicalLM:
         return [(s, e) for s, e in regions if e - s >= 2]
 
     def _find_similar_terms(self, segment):
-        """查找与 segment 同长度且相似的医学术语"""
+        """查找与 segment 近长度且相似的医学术语"""
         seg_len = len(segment)
         if seg_len < 2 or seg_len > 8:
             return []
         candidates = []
-        # 从包含 segment 中任一字的术语中筛选同长度的
+        # 从包含 segment 中任一字的术语中筛选近长度候选
         seen = set()
         for ch in segment:
             for term in self._term_chars.get(ch, []):
-                if len(term) == seg_len and term != segment and term not in seen:
-                    seen.add(term)
-                    # 至少有一个字不同（且不是完全不同）
-                    common = sum(1 for a, b in zip(segment, term) if a == b)
-                    if 0 < common < seg_len:  # 部分匹配
-                        candidates.append(term)
+                if abs(len(term) - seg_len) > 1 or term == segment or term in seen:
+                    continue
+                seen.add(term)
+                # 至少有一个字不同（且不是完全不同）
+                common = sum(1 for a, b in zip(segment, term) if a == b)
+                if 0 < common < seg_len:  # 部分匹配
+                    candidates.append(term)
         return candidates[:50]  # 限制候选数
+
 
     def _find_term_spans(self, text):
         """找出文本中所有已知医学术语的位置"""

@@ -24,7 +24,7 @@ class KnowledgeQADialog(QDialog):
         layout.setSpacing(8)
 
         # 提示语
-        hint = QLabel("💬 请输入问题，例如：\n  • 高血压的常见治疗方案\n  • 二甲双胍说明书\n  • 高血压和糖尿病的区别")
+        hint = QLabel("💬 请输入问题，例如：\n  • 高血压的常见治疗方案\n  • 医师法第九条\n  • 医疗事故怎么鉴定\n  • 医疗事故的经典案例")
         hint.setStyleSheet("color: #99b; background: rgba(255,255,255,0.04); padding: 8px; border-radius: 6px; font-size: 12px;")
         layout.addWidget(hint)
 

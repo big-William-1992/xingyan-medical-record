@@ -248,3 +248,61 @@ class RuleEngine:
             "错别字规则数": len(self.rules.get("错别字", [])),
             "逻辑错误规则数": len(self.rules.get("逻辑错误", []))
         }
+
+    def realtime_checks(self, text, dept="", field=""):
+        """实时质控校验，返回可展示的提醒列表"""
+        text = text or ""
+        results = []
+        seen = set()
+
+        for rule in self.rules.get("错别字", []):
+            wrong = (rule.get("错误") or "").strip()
+            correct = (rule.get("正确") or "").strip()
+            if not wrong or wrong in seen:
+                continue
+            if wrong in text:
+                seen.add(wrong)
+                results.append({
+                    "type": "typo",
+                    "level": "建议",
+                    "message": f"疑似错别字：{wrong} → {correct}",
+                    "wrong": wrong,
+                    "correct": correct,
+                })
+
+        for rule in self.rules.get("逻辑错误", []):
+            pattern = rule.get("错误模式") or rule.get("描述") or ""
+            if not pattern:
+                continue
+            if pattern == "疾病与药物不匹配":
+                pass
+            elif pattern == "症状与诊断不符":
+                pass
+            elif pattern == "检查与诊断不符":
+                pass
+            elif pattern == "数值单位错误":
+                matches = re.findall(r'(\d+\.?\d*)\s*([cCｃ℃])', text)
+                for value, unit in matches:
+                    if unit in {"c", "C", "ｃ"} and unit != "℃":
+                        results.append({
+                            "type": "unit",
+                            "level": "自动",
+                            "message": f"疑似单位错误：{value}{unit} → {value}℃",
+                            "wrong": f"{value}{unit}",
+                            "correct": f"{value}℃",
+                        })
+            elif pattern == "必填项缺失":
+                required = ["主诉", "现病史", "既往史", "体格检查", "初步诊断"]
+                if field:
+                    required = [field]
+                for item in required:
+                    if item not in text:
+                        results.append({
+                            "type": "missing",
+                            "level": "建议",
+                            "message": f"疑似缺失：{item}",
+                            "wrong": item,
+                            "correct": item,
+                        })
+
+        return results

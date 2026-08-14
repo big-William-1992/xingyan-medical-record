@@ -41,18 +41,15 @@ def get_asr():
     return _asr
 
 def get_kg():
-    global _kg
-    if _kg is None:
-        from knowledge_qa import KnowledgeQA
-        _qa_obj = KnowledgeQA()
-        _kg = _qa_obj.kg
-    return _kg
+    # 复用 get_qa() 的实例，避免知识图谱被加载两遍
+    return get_qa().kg
 
 def get_qa():
-    global _qa
+    global _qa, _kg
     if _qa is None:
         from knowledge_qa import KnowledgeQA
         _qa = KnowledgeQA()
+        _kg = _qa.kg
     return _qa
 
 def get_template_engine():
@@ -265,7 +262,7 @@ async def save_record(body: dict = Body(...)):
 @app.get("/api/records")
 async def list_records():
     db = get_db()
-    records = db.get_all_records(user_id=1)
+    records = db.list_records(user_id=1)
     return [{"id": r["id"], "patient_name": r.get("patient_name", ""),
              "department": r.get("department", ""), "updated_at": r.get("updated_at", "")}
             for r in (records or [])[:50]]
@@ -275,8 +272,8 @@ async def correct_text(body: dict = Body(...)):
     """对文本执行纠错"""
     text = body.get("text", "")
     corrector = get_corrector()
-    result = corrector.correct(text)
-    return {"original": text, "corrected": result.get("corrected", text), "log": result.get("log", [])}
+    corrected, log = corrector.correct(text)
+    return {"original": text, "corrected": corrected, "log": log}
 
 
 @app.post("/api/fill")
@@ -326,14 +323,16 @@ _classifier = None
 async def ws_asr(websocket: WebSocket):
     """
     接收浏览器端录音的 PCM/WAV 数据，返回识别结果。
-    支持流式中间识别：每累积约4秒音频发送一次 partial 结果。
+    支持流式中间识别：每累积约2秒音频发送一次 partial 结果。
     """
     await websocket.accept()
     asr = get_asr()
     audio_buffer = bytearray()
     last_partial_len = 0
-    # 每 4 秒音频做一次中间识别 (16000Hz * 2bytes * 4s = 128000 bytes)
-    PARTIAL_THRESHOLD = 128000
+    # 每 2 秒音频做一次中间识别 (16000Hz * 2bytes * 2s = 64000 bytes)
+    PARTIAL_THRESHOLD = 64000
+    # 缓冲区大小限制：10MB（约 5 分钟音频）
+    MAX_BUFFER_SIZE = 10 * 1024 * 1024
 
     try:
         await websocket.send_json({"type": "status", "msg": "ready"})
@@ -346,7 +345,18 @@ async def ws_asr(websocket: WebSocket):
 
             if "bytes" in msg and msg["bytes"]:
                 audio_buffer.extend(msg["bytes"])
-                # 流式中间识别：每累积 4 秒新音频做一次快速识别
+                
+                # 检查缓冲区大小限制
+                if len(audio_buffer) > MAX_BUFFER_SIZE:
+                    await websocket.send_json({
+                        "type": "error", 
+                        "msg": "录音时间过长，请分段录音"
+                    })
+                    audio_buffer.clear()
+                    last_partial_len = 0
+                    continue
+                
+                # 流式中间识别：每累积 2 秒新音频做一次快速识别
                 if len(audio_buffer) - last_partial_len >= PARTIAL_THRESHOLD:
                     partial_text = await _quick_recognize(asr, bytes(audio_buffer))
                     if partial_text:
@@ -391,7 +401,7 @@ async def _quick_recognize(asr, pcm_data: bytes) -> str:
             wf.writeframes(pcm_data)
         tmp.close()
         # 在线程池中运行 CPU 密集型识别
-        text = await asyncio.get_event_loop().run_in_executor(None, asr.transcribe_file, tmp.name)
+        text = await asyncio.get_running_loop().run_in_executor(None, asr.transcribe_file, tmp.name)
         return text or ""
     except Exception:
         return ""

@@ -57,7 +57,10 @@ from phrase_library import PhraseLibrary
 from phrase_dialog import PhraseDialog
 from correction_feedback import CorrectionFeedback
 from ux_components import Toast, RecordingIndicator, OnboardingGuide, FieldHighlighter
-from audio_widgets import WaveformWidget, AudioPlayerWidget
+from audio_widgets import WaveformWidget, AudioPlayerWidget, AsrPreviewPanel
+from diff_review_dialog import DiffReviewDialog
+from correction_memory import get_memory
+from topk_engine import get_topk_engine
 
 
 # ==================== 语音识别线程 ====================
@@ -546,12 +549,8 @@ class FieldWordsPanel(QWidget):
 
     def _load_words(self):
         """加载 field_words.json"""
-        words_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "星衍病历智能录入系统", "field_words.json"
-        )
-        if not os.path.exists(words_path):
-            words_path = os.path.join(os.path.dirname(__file__), "field_words.json")
+        # 使用当前文件所在目录，避免硬编码中文目录名
+        words_path = os.path.join(os.path.dirname(__file__), "field_words.json")
         try:
             with open(words_path, 'r', encoding='utf-8') as f:
                 self._words_data = json.load(f)
@@ -845,6 +844,10 @@ class MedVoiceApp(QMainWindow):
 
         # 纠错反馈收集（用于 LM 迭代训练）
         self.feedback = CorrectionFeedback()
+        # 统一纠错记忆库（用于 Top-K / prompt 导出 / LM 迭代）
+        self.memory = None
+        # M3 Top-K 术语引擎
+        self.topk_engine = None
 
         # 崩溃日志
         self.crash_logger = CrashLogger()
@@ -879,8 +882,13 @@ class MedVoiceApp(QMainWindow):
         # 光标移动时自动检测当前字段
         self.text_edit.cursorPositionChanged.connect(self._on_cursor_moved)
 
-        # 启动时：自动备份数据库 + 从历史病历预热用户热词
-        self._startup_maintenance()
+        # 启动时：自动备份数据库 + 从历史病历预热用户热词（移到后台线程，避免阻塞启动）
+        self._startup_maintenance_thread = threading.Thread(
+            target=self._startup_maintenance,
+            daemon=True,
+            name="StartupMaintenance"
+        )
+        self._startup_maintenance_thread.start()
 
         # 首次使用新手引导
         self._guide = OnboardingGuide.show_if_needed(self)
@@ -931,33 +939,65 @@ class MedVoiceApp(QMainWindow):
             self.asr.update_user_hotwords(common)
             # 重新按当前科室加载热词以生效
             self.asr.set_hotwords(self.current_dept)
+            self._refresh_topk_hotwords(silent=True)
             if not silent:
                 self.status_bar.showMessage("已从 %d 份病历提取 %d 个个人高频词并加入热词" % (len(records), len(common)))
         elif not silent:
             self.status_bar.showMessage("未提取到足够的高频词")
 
+    def _refresh_topk_hotwords(self, silent=False):
+        """基于记忆库 Top-K 术语刷新 ASR 热词"""
+        try:
+            topk = self._get_topk_engine()
+            if topk:
+                topk.refresh_asr_hotwords(
+                    self.asr,
+                    dept=self.current_dept,
+                    doctor_id=self.current_user.get("id") if isinstance(self.current_user, dict) else None,
+                    term_budget=300,
+                    postprocess_budget=120,
+                )
+                self.asr.set_hotwords(self.current_dept)
+                if not silent:
+                    self.status_bar.showMessage("已基于记忆库刷新 Top-K 术语热词")
+        except Exception as e:
+            print(f"[Main] 刷新 Top-K 热词失败: {e}")
+
     def _on_cursor_moved(self):
         """光标移动时，检测当前所在的病历字段"""
         cursor = self.text_edit.textCursor()
-        text = self.text_edit.toPlainText()
         pos = cursor.position()
-
-        # 向上查找当前字段名（冒号前的内容）
-        field = self._detect_field_at_position(text, pos)
+        
+        # 优化：只在跨行时重新检测，避免每次光标移动都重新计算
+        if not hasattr(self, '_last_cursor_line'):
+            self._last_cursor_line = -1
+            self._last_detected_field = None
+        
+        # 获取当前行号
+        block = cursor.block()
+        current_line = block.blockNumber()
+        
+        # 如果行号没变，使用缓存结果
+        if current_line == self._last_cursor_line:
+            field = self._last_detected_field
+        else:
+            text = self.text_edit.toPlainText()
+            field = self._detect_field_at_position(text, pos)
+            self._last_cursor_line = current_line
+            self._last_detected_field = field
+        
         if field and field != self.field_panel._current_field:
             self.field_panel.set_current_field(field)
 
     def _detect_field_at_position(self, text, pos):
         """检测给定位置属于哪个字段"""
-        # 找到光标前的所有字段标记
-        fields = self.parser.SECTION_KEYWORDS
         best_field = None
         best_pos = -1
 
         for keyword, standard_field in self.parser.keyword_to_field.items():
-            # 修复：用 [：: \t]* 替代 [：:\s]*，避免 \s 匹配换行符导致跨行误匹配
+            # 优化：使用 finditer(text, 0, pos) 避免创建子串
             pattern = re.compile(re.escape(keyword) + r'[：: \t]*')
-            for m in pattern.finditer(text[:pos]):
+            for m in pattern.finditer(text, 0, pos):
                 if m.end() > best_pos:
                     best_pos = m.end()
                     best_field = standard_field
@@ -1363,8 +1403,15 @@ class MedVoiceApp(QMainWindow):
             border-radius: 5px;
         """)
         self.partial_label.setWordWrap(True)
-        self.partial_label.setMaximumHeight(40)
+        self.partial_label.setMaximumHeight(120)
         right_layout.addWidget(self.partial_label)
+
+        # 悬浮识别预览面板（录音中实时显示 + 识别后接受/拒绝/重听确认）
+        self.asr_preview = AsrPreviewPanel(self)
+        self.asr_preview.accepted.connect(self._on_preview_accept)
+        self.asr_preview.rejected.connect(self._on_preview_reject)
+        self.asr_preview.retried.connect(self._on_preview_retry)
+        self._pending_asr_text = ''  # 待确认的识别结果
 
         # 实时录音波形图（录音时显示滚动音量柱状图）
         self.waveform = WaveformWidget()
@@ -1556,6 +1603,7 @@ class MedVoiceApp(QMainWindow):
         self.current_dept = dept
         self.corrector.set_department(dept)
         self.asr.set_hotwords(dept)
+        self._refresh_topk_hotwords(silent=True)
 
         # 更新模板列表
         self.template_combo.blockSignals(True)
@@ -1999,6 +2047,20 @@ class MedVoiceApp(QMainWindow):
         else:
             self._stop_recording()
 
+    def moveEvent(self, event):
+        """主窗口移动时，悬浮预览面板跟随定位"""
+        super().moveEvent(event)
+        panel = getattr(self, 'asr_preview', None)
+        if panel is not None and panel.isVisible():
+            panel.reposition()
+
+    def resizeEvent(self, event):
+        """主窗口缩放时，悬浮预览面板跟随定位"""
+        super().resizeEvent(event)
+        panel = getattr(self, 'asr_preview', None)
+        if panel is not None and panel.isVisible():
+            panel.reposition()
+
     def _start_recording(self):
         """开始录音"""
         if not self.asr.is_ready():
@@ -2025,6 +2087,11 @@ class MedVoiceApp(QMainWindow):
         self.is_listening = True
         self.partial_text = ""
         self.text_edit.setFocus()
+
+        # 重置悬浮预览面板（隐藏并清空，等待新的流式结果）
+        self.asr_preview.reset()
+        self.asr_preview.hide_panel()
+        self._pending_asr_text = ''
 
         # 保存录音前的编辑器内容（流式显示时保留已有文本）
         self._stream_base_text = self.text_edit.toPlainText()
@@ -2092,6 +2159,10 @@ class MedVoiceApp(QMainWindow):
             self.listen_thread.stop()
             self.listen_thread.wait(2000)
             self.listen_thread = None
+
+        # 无待确认结果时隐藏悬浮预览（已有最终结果则保留，等待用户接受/拒绝/重听）
+        if not getattr(self, '_pending_asr_text', ''):
+            self.asr_preview.hide_panel()
 
         self.partial_label.setText("等待输入...")
         self.status_bar.showMessage("录音结束")
@@ -2316,7 +2387,7 @@ class MedVoiceApp(QMainWindow):
         self.status_bar.showMessage(f"🗣 未找到科室：{name}")
 
     def _on_recognized(self, text):
-        """识别到文本，自动按病历格式结构化填充"""
+        """识别到文本：显示悬浮预览，等待用户接受/拒绝/重听后再填充"""
         try:
             print(f"[UI] 收到识别结果，长度: {len(text) if text else 0}")
             self.crash_logger.log_event("ASR识别完成", {"text_length": len(text) if text else 0})
@@ -2324,57 +2395,21 @@ class MedVoiceApp(QMainWindow):
             if not text:
                 self.partial_label.setText("⚠️ 未识别到文字，请重试")
                 self.status_bar.showMessage("识别完成，但未获取到文字内容")
+                self.asr_preview.hide_panel()
                 return
 
-            # 优先拦截语音命令（如“清除内容”“换模板XX”）
+            # 优先拦截语音命令（如“清除内容”“换模板XX”）——命令立即执行，无需确认
             if self._handle_voice_command(text):
                 self.partial_label.setText("✓ 已执行语音命令")
+                self.asr_preview.hide_panel()
                 return
 
-            # 如果选了模板，用增量填充（只填空字段，不覆盖已有内容）
-            template_name = self.template_combo.currentText()
-            if template_name and self.current_dept:
-                template_content = self.template_engine.get_template(
-                    self.current_dept, template_name
-                )
-                if template_content:
-                    # 使用录音前的干净内容作为 base（避免流式识别追加的垃圾文本干扰）
-                    clean_base = getattr(self, '_stream_base_text', '').strip()
-                    base = clean_base if clean_base else template_content
-
-                    # 检查是否是常见病模板（含X占位符）
-                    import re as _re
-                    if _re.search(r'X+', base):
-                        # 常见病模板模式：用语音输入替换X占位符
-                        filled = self._replace_placeholders_with_voice(text, base)
-                        self.text_edit.setPlainText(filled)
-                        self._last_asr_snapshot = filled  # 记录ASR填充后快照
-                        remaining = len(_re.findall(r'X+', filled))
-                        self.partial_label.setText(f"✓ 已替换占位符，剩余 {remaining} 处")
-                        self.status_bar.showMessage(f"套用完成，剩余 {remaining} 处占位符待手动填写")
-                        print(f"[UI] 常见病模板占位符替换完成")
-                        return
-
-                    filled = self.classifier.incremental_fill(text, base)
-                    self.text_edit.setPlainText(filled)
-                    self._last_asr_snapshot = filled  # 记录ASR填充后快照
-                    self.partial_label.setText("✓ 识别完成")
-                    self.status_bar.showMessage(f"识别完成，共 {len(filled)} 字")
-                    print(f"[UI] 增量填充完成")
-                    return
-
-            # 将识别文本插入到编辑器（追加模式，不覆盖已有内容）
-            current = self.text_edit.toPlainText()
-            if current.strip():
-                # 有内容时，在末尾追加识别结果
-                text = current.rstrip() + "\n\n" + text
-            self.text_edit.setPlainText(text)
-            self._last_asr_snapshot = text  # 记录ASR填充后快照
-            self.partial_label.setText("✓ 识别完成")
-            self.status_bar.showMessage(f"识别完成，共 {len(text)} 字")
-            print(f"[UI] 文本已插入编辑器")
-            # 智能推荐模板（非侵入，仅状态栏提示）
-            self._recommend_template(self.text_edit.toPlainText())
+            # 显示最终识别预览 + 接受/拒绝/重听确认（确认后才填充编辑器）
+            self._pending_asr_text = text
+            self.asr_preview.show_result(text)
+            self.partial_label.setText("✓ 识别完成，请确认预览结果")
+            self.status_bar.showMessage("识别完成，点击「接受」填入病历，或拒绝 / 重听")
+            self.text_edit.setFocus()
 
         except Exception as e:
             print(f"[UI] 处理识别结果时出错: {e}")
@@ -2390,6 +2425,78 @@ class MedVoiceApp(QMainWindow):
         # 录音结束后自动加载音频到播放器（供回放校对）
         self._load_last_audio()
 
+    def _apply_asr_result(self, text):
+        """把已确认的识别文本按病历格式结构化填充（模板增量填充 / X占位符 / 追加模式）"""
+        # 如果选了模板，用增量填充（只填空字段，不覆盖已有内容）
+        template_name = self.template_combo.currentText()
+        if template_name and self.current_dept:
+            template_content = self.template_engine.get_template(
+                self.current_dept, template_name
+            )
+            if template_content:
+                # 使用录音前的干净内容作为 base（避免流式识别追加的垃圾文本干扰）
+                clean_base = getattr(self, '_stream_base_text', '').strip()
+                base = clean_base if clean_base else template_content
+
+                # 检查是否是常见病模板（含X占位符）
+                import re as _re
+                if _re.search(r'X+', base):
+                    # 常见病模板模式：用语音输入替换X占位符
+                    filled = self._replace_placeholders_with_voice(text, base)
+                    self.text_edit.setPlainText(filled)
+                    self._last_asr_snapshot = filled  # 记录ASR填充后快照
+                    remaining = len(_re.findall(r'X+', filled))
+                    self.partial_label.setText(f"✓ 已替换占位符，剩余 {remaining} 处")
+                    self.status_bar.showMessage(f"套用完成，剩余 {remaining} 处占位符待手动填写")
+                    print(f"[UI] 常见病模板占位符替换完成")
+                    return
+
+                filled = self.classifier.incremental_fill(text, base)
+                self.text_edit.setPlainText(filled)
+                self._last_asr_snapshot = filled  # 记录ASR填充后快照
+                self.partial_label.setText("✓ 识别完成")
+                self.status_bar.showMessage(f"识别完成，共 {len(filled)} 字")
+                print(f"[UI] 增量填充完成")
+                return
+
+        # 将识别文本插入到编辑器（追加模式，不覆盖已有内容）
+        current = self.text_edit.toPlainText()
+        if current.strip():
+            # 有内容时，在末尾追加识别结果
+            text = current.rstrip() + "\n\n" + text
+        self.text_edit.setPlainText(text)
+        self._last_asr_snapshot = text  # 记录ASR填充后快照
+        self.partial_label.setText("✓ 识别完成")
+        self.status_bar.showMessage(f"识别完成，共 {len(text)} 字")
+        print(f"[UI] 文本已插入编辑器")
+        # 智能推荐模板（非侵入，仅状态栏提示）
+        self._recommend_template(self.text_edit.toPlainText())
+
+    def _on_preview_accept(self):
+        """接受预览：把识别结果按病历格式填充到编辑器"""
+        text = getattr(self, '_pending_asr_text', '') or ''
+        self._pending_asr_text = ''
+        self.asr_preview.hide_panel()
+        if text:
+            self._apply_asr_result(text)
+        else:
+            self.partial_label.setText("等待输入...")
+
+    def _on_preview_reject(self):
+        """拒绝预览：丢弃本次识别结果"""
+        self._pending_asr_text = ''
+        self.asr_preview.hide_panel()
+        self.partial_label.setText("已拒绝本次识别结果")
+        self.status_bar.showMessage("已丢弃识别结果")
+
+    def _on_preview_retry(self):
+        """重听：重新开始录音"""
+        self._pending_asr_text = ''
+        self.asr_preview.hide_panel()
+        if self.is_listening:
+            self._stop_recording()
+        self._toggle_recording()
+
     def _load_last_audio(self):
         """把最近一次录音加载到音文对照播放器"""
         audio_path = getattr(self.asr, 'last_audio_path', None)
@@ -2397,11 +2504,15 @@ class MedVoiceApp(QMainWindow):
             self.audio_player_widget.load(audio_path)
 
     def _on_partial(self, text):
-        """流式识别中间结果：仅在状态栏实时提示，不写入编辑器（避免污染模板结构）"""
+        """流式识别中间结果：实时刷新悬浮预览面板，不写入编辑器（避免污染模板结构）"""
         if not text:
             return
         self._stream_has_partial = True
-        self.partial_label.setText(f"🔊 识别中：{text[-50:]}")
+        # 完整文本多行展示（超长按末尾截取），不再只显示最后 50 字
+        if len(text) > 200:
+            text = "…" + text[-200:]
+        self.partial_label.setText(f"🔊 识别中：{text}")
+        self.asr_preview.show_partial(text)
 
     def _run_correction(self):
         """执行纠错"""
@@ -2413,12 +2524,27 @@ class MedVoiceApp(QMainWindow):
         self.status_bar.showMessage("正在纠错...")
         QApplication.processEvents()
 
+        self._last_correction_original = text
         self.correct_thread = CorrectThread(self.corrector, text)
         self.correct_thread.correction_done.connect(self._on_correction_done)
         self.correct_thread.start()
 
     def _on_correction_done(self, corrected, log):
         """纠错完成"""
+        original_text = getattr(self, '_last_correction_original', '')
+        review_accepted = False
+        if original_text:
+            try:
+                dialog = DiffReviewDialog(original_text, corrected, log, self)
+                if dialog.exec_() == QDialog.Accepted:
+                    corrected = dialog.result_text
+                    review_accepted = True
+                else:
+                    corrected = original_text
+            except Exception as e:
+                print(f"[DiffReview] error: {e}")
+                corrected = original_text if original_text else corrected
+
         self.text_edit.setPlainText(corrected)
 
         # 保存完整日志
@@ -2427,6 +2553,8 @@ class MedVoiceApp(QMainWindow):
         # 记录纠错反馈（用于 LM 迭代训练）
         try:
             self.feedback.log_corrections(log, source="corrector")
+            if review_accepted:
+                self.feedback.log_accept_all()
         except Exception:
             pass
 
@@ -2581,6 +2709,14 @@ class MedVoiceApp(QMainWindow):
             except Exception:
                 pass
         self.status_bar.showMessage(f"✓ 已接受纠错：{orig} → {corr}")
+        # 记忆库：接受当前纠错
+        try:
+            memory = self._get_memory()
+            if memory and orig and corr and orig != corr:
+                memory.accept_memory_by_values(orig, corr, doctor_id=self.current_user.get("id") if isinstance(self.current_user, dict) else None, dept=getattr(self, "current_dept", "") or "")
+        except Exception as e:
+            print(f"[Memory] 接受纠错失败: {e}")
+
 
     def _accept_all_corrections(self):
         """一键接受所有纠错建议"""
@@ -2636,6 +2772,14 @@ class MedVoiceApp(QMainWindow):
         except Exception:
             pass
 
+        # 记忆库：拒绝当前纠错
+        try:
+            memory = self._get_memory()
+            if memory and orig and corr and orig != corr:
+                memory.reject_memory_by_values(orig, corr, doctor_id=self.current_user.get("id") if isinstance(self.current_user, dict) else None, dept=getattr(self, "current_dept", "") or "")
+        except Exception as e:
+            print(f"[Memory] 拒绝纠错失败: {e}")
+
         # 恢复原文（从编辑器中撤销这条纠错）
         # 修复：只替换第一个匹配，避免 replace 替换所有相同文本导致误伤
         idx_in_text = text.find(corr)
@@ -2662,6 +2806,23 @@ class MedVoiceApp(QMainWindow):
         self._reject_btn.setEnabled(False)
         self.log_hint.setText(f"已拒绝并记住：{orig}")
         self.status_bar.showMessage(f"✗ 已拒绝纠错并记录偏好：{orig} → {corr}")
+
+    def _get_memory(self):
+        if self.memory is None:
+            try:
+                self.memory = get_memory()
+            except Exception as e:
+                print(f"[Memory] 初始化失败: {e}")
+        return self.memory
+
+    def _get_topk_engine(self):
+        if self.topk_engine is None:
+            try:
+                self.topk_engine = get_topk_engine(memory=self._get_memory())
+            except Exception as e:
+                print(f"[TopK] 初始化失败: {e}")
+        return self.topk_engine
+
 
     def _clear_text(self):
         """清除文本"""
@@ -2950,6 +3111,7 @@ class MedVoiceApp(QMainWindow):
                        if len(w) >= 2 and content.count(w) >= 1]
             if learned:
                 self.asr.update_user_hotwords(learned)
+            self._refresh_topk_hotwords(silent=True)
         except Exception as e:
             print(f"[Main] 增量学习热词失败: {e}")
 
@@ -2959,6 +3121,16 @@ class MedVoiceApp(QMainWindow):
             self.feedback.log_accept_all()
         except Exception:
             pass
+
+        # 记忆库：保存时记录医生确认后的最终稿与手动修正
+        try:
+            memory = self._get_memory()
+            if memory:
+                doctor_id = self.current_user.get("id") if isinstance(self.current_user, dict) else None
+                dept = getattr(self, "current_dept", "") or ""
+                memory.record_final_text(content, doctor_id=doctor_id, dept=dept, record_id=getattr(self, "current_record_id", None), snapshot=getattr(self, "_last_asr_snapshot", ''))
+        except Exception as e:
+            print(f"[Memory] 记录终稿失败: {e}")
 
         # 提取用户手动修正（对比 ASR 快照 vs 终稿）→ 写入混淆对候选
         try:
@@ -3278,6 +3450,7 @@ class MedVoiceApp(QMainWindow):
                 Toast.show_toast(self, "语言模型重训完成，重启后生效", "success")
                 self.status_bar.showMessage("🧠 语言模型已更新，重启程序后生效")
                 print(f"[LM] 重训完成:\n{output[-500:]}")
+                self._refresh_topk_hotwords(silent=True)
             else:
                 QMessageBox.warning(self, "训练失败", result.stderr[-300:] or "未知错误")
                 self.status_bar.showMessage("⚠️ 语言模型训练失败")
@@ -3776,6 +3949,7 @@ class WebViewApp(QMainWindow):
         self._presets_path = os.path.join(os.path.dirname(__file__), "field_presets.json")
         self._presets_data = {}
         self._load_presets()
+        self._asr_preview_timer = None
 
         # WebView
         from webview_bridge import WebViewMain
@@ -3787,6 +3961,8 @@ class WebViewApp(QMainWindow):
         br.sig_rec_toggle.connect(self._toggle_recording)
         br.sig_save.connect(self._save_record)
         br.sig_qa.connect(self._show_qa)
+        br.sig_qa_ask.connect(self._on_qa_ask)
+        br.sig_qa_close.connect(self.webview.js_close_qa)
         br.sig_template_mgr.connect(self._open_template_manager)
         br.sig_retrain.connect(self._retrain_lm)
         br.sig_dept_changed.connect(self._on_dept_changed)
@@ -3796,6 +3972,9 @@ class WebViewApp(QMainWindow):
         br.sig_chip_click.connect(self._on_chip_click)
         br.sig_preset_click.connect(self._on_preset_click)
         br.sig_add_preset.connect(self._on_add_preset)
+        br.sig_asr_accept.connect(self._on_asr_accept)
+        br.sig_asr_reject.connect(self._on_asr_reject)
+        br.sig_asr_retry.connect(self._on_asr_retry)
 
         # 录音计时
         self._duration_timer = QTimer(self)
@@ -3805,6 +3984,7 @@ class WebViewApp(QMainWindow):
 
         # 延迟初始化 UI 数据（等页面加载完成）
         self.webview.set_on_ready(self._init_webview_data)
+        self._recent_history_opened = False
 
     def _load_presets(self):
         try:
@@ -3819,11 +3999,13 @@ class WebViewApp(QMainWindow):
 
     def _init_webview_data(self):
         """WebView 加载完成后推送初始数据"""
-        # 科室列表
-        depts = ["全科", "内科", "外科", "妇产科", "儿科"]
+        # 科室列表（内科优先，与默认模板兜底一致）
+        depts = ["内科", "外科", "妇产科", "儿科", "全科"]
         self.webview.js_set_depts(depts)
         # 模板列表
         self._refresh_templates()
+        # 默认加载入院记录骨架，让用户启动即看到结构化字段（语音录入可直接归类）
+        self._on_template_changed("入院记录")
         # 字段导航
         fields = ["主诉", "现病史", "既往史", "个人史", "婚育史", "家族史",
                   "体格检查", "辅助检查", "初步诊断", "诊疗计划"]
@@ -3833,14 +4015,28 @@ class WebViewApp(QMainWindow):
         kg_count = len(self.qa_engine.kg.entities) if self.qa_engine.kg else 0
         drug_count = len(self.qa_engine.kg.drug_inserts) if self.qa_engine.kg else 0
         self.webview.js_set_stats(str(hw), str(kg_count), str(drug_count))
+        # 初始加载最近病历
+        try:
+            self._show_history()
+        except Exception:
+            pass
         # 默认科室热词
         self.corrector.set_department("通用")
         self.asr.set_hotwords("通用")
         # 默认上下文面板
         self._update_context_panel("主诉")
+        # 启动检查
+        self._show_startup_checks()
+
+    def _dept_for_templates(self):
+        """模板查找用科室：通用/全科无独立模板，兜底到内科"""
+        dept = self.current_dept
+        if dept in ("通用", "全科"):
+            return "内科"
+        return dept
 
     def _refresh_templates(self):
-        dept = self.current_dept if self.current_dept != "通用" else "内科"
+        dept = self._dept_for_templates()
         tpls = self.template_engine.get_templates(dept)
         tpl_names = [t["name"] for t in tpls]
         self.webview.js_set_templates(tpl_names)
@@ -3894,6 +4090,11 @@ class WebViewApp(QMainWindow):
         if self.listen_thread and self.listen_thread.isRunning():
             self.listen_thread.stop()
             self.listen_thread.wait(3000)
+        # 兜底：3 秒后若预览面板仍残留（无最终结果时）则清空
+        try:
+            QTimer.singleShot(3000, lambda: self.webview.js_set_asr_preview(""))
+        except Exception:
+            pass
 
     def _update_rec_time(self):
         self._rec_seconds += 1
@@ -3903,6 +4104,12 @@ class WebViewApp(QMainWindow):
     def _on_recognized(self, text):
         if not text:
             return
+        self._last_asr_preview_text = text
+        try:
+            self.webview.js_set_asr_preview(text)
+            self.webview.js_set_asr_actions(True)
+        except Exception as e:
+            print(f"[ASR] 预览更新失败: {e}")
         # 语音命令拦截
         cmd, arg = self.voice_command.parse(text)
         if cmd == "stop_record":
@@ -3913,6 +4120,17 @@ class WebViewApp(QMainWindow):
             return
         # 结构化填充：将识别文本智能分配到模板字段
         self._fill_and_update(text)
+        # 保留最终预览一会再清空，避免一闪而过
+        try:
+            if self._asr_preview_timer is not None:
+                self._asr_preview_timer.stop()
+            self._asr_preview_timer = QTimer(self)
+            self._asr_preview_timer.setSingleShot(True)
+            self._asr_preview_timer.timeout.connect(lambda: self.webview.js_set_asr_preview(""))
+            self._asr_preview_timer.timeout.connect(lambda: self.webview.js_set_asr_actions(False))
+            self._asr_preview_timer.start(2500)
+        except Exception as e:
+            print(f"[ASR] 预览延时清空失败: {e}")
 
     def _fill_and_update(self, asr_text):
         """调用 MedicalClassifier.incremental_fill 做结构化填充"""
@@ -3920,32 +4138,56 @@ class WebViewApp(QMainWindow):
             base = getattr(self, '_last_editor_text', '') or ''
             if not base:
                 # 尝试从模板获取
-                dept = self.current_dept if self.current_dept != "通用" else "内科"
+                dept = self._dept_for_templates()
                 tpls = self.template_engine.get_templates(dept)
                 if tpls:
                     base = tpls[0].get('content', '')
             if not base:
                 # 无模板，直接插入
+                print(f"[Fill] 无模板兜底，直接插入: {asr_text[:50]}")
                 self.webview.js_insert_text(asr_text)
                 return
+            inferred = self.classifier.extract_basic_fields(asr_text)
+            print(f"[Fill] 识别文本: {asr_text[:80]}")
+            print(f"[Fill] base首行: {base.splitlines()[0] if base else '(空)'!r} (共{len(base)}字)")
+            print(f"[Fill] 推断字段: {inferred}")
             filled = self.classifier.incremental_fill(asr_text, base)
             if filled != base:
                 html = self._text_to_editor_html(filled)
                 self.webview.js_set_content(html)
                 self._last_editor_text = filled
+                print("[Fill] ✓ 填充完成，已更新编辑器")
             else:
                 # 填充无变化，降级为直接插入
+                print("[Fill] ⚠ 填充无变化，降级为直接插入")
                 self.webview.js_insert_text(asr_text)
         except Exception as e:
+            import traceback
             print(f"[Fill] error: {e}")
+            traceback.print_exc()
             self.webview.js_insert_text(asr_text)
 
     def _on_partial(self, text):
-        pass  # 流式结果暂不显示在 WebView
+        if not text:
+            return
+        # 流式结果连续刷新预览；若正在显示最终结果，先取消延时清空
+        try:
+            if self._asr_preview_timer is not None:
+                self._asr_preview_timer.stop()
+                self._asr_preview_timer = None
+            self.webview.js_set_asr_preview(text)
+        except Exception as e:
+            print(f"[ASR] 预览更新失败: {e}")
 
     def _on_editor_changed(self, text):
         """编辑器内容变化（用于保存时获取）"""
         self._last_editor_text = text
+        try:
+            alerts = self.rule_engine.realtime_checks(text, dept=self.current_dept, field=getattr(self, '_current_field', ''))
+            self.webview.js_set_qc_status(len(alerts))
+        except Exception:
+            pass
+        print(f"[Editor] 内容同步: {len(text)}字 首行={text.splitlines()[0][:30] if text else '(空)'!r}")
 
     def _save_record(self):
         text = getattr(self, '_last_editor_text', '')
@@ -3982,6 +4224,65 @@ class WebViewApp(QMainWindow):
             pass
 
     def _show_qa(self):
+        self._show_qa_for_selection()
+
+    def _on_qa_ask(self, question):
+        """用户在问答面板输入问题：交给知识图谱引擎回答"""
+        try:
+            question = (question or '').strip()
+            if not question:
+                return
+            result = self.qa_engine.answer(question)
+            answer_text = result.get('text', '') if isinstance(result, dict) else str(result)
+            import html as _html
+            html_text = _html.escape(answer_text or '未找到相关知识，请换个问法试试。')
+            html_text = html_text.replace('\n', '<br>')
+            self.webview.js_set_qa(f'<b>问：{_html.escape(question)}</b><br><br>{html_text}')
+            print(f"[QA] 提问: {question[:40]} -> 回答{len(answer_text)}字")
+        except Exception as e:
+            print(f"[QA] 提问处理失败: {e}")
+
+    def _show_qa_dialog(self):
+        try:
+            from qa_dialog import KnowledgeQADialog
+            dlg = KnowledgeQADialog(self.qa_engine, self)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "问答错误", f"知识问答模块加载失败：\n{e}")
+
+    def _show_history(self):
+        try:
+            if not self.db:
+                self.webview.js_set_history('数据库未初始化')
+                return
+            user_id = self.current_user.get("id") if isinstance(self.current_user, dict) else None
+            records = self.db.list_records(user_id=user_id, limit=20)
+            if not records:
+                self.webview.js_set_history('暂无最近病历')
+                return
+            lines = []
+            for rec in records[:8]:
+                title = rec.get('patient_name') or ('病历#' + str(rec.get('record_id')))
+                snippet = (rec.get('content') or '').strip().splitlines()[0]
+                lines.append(f"{title}：{snippet}")
+            self.webview.js_set_history('<br>'.join(lines))
+        except Exception as e:
+            print(f"[History] 失败: {e}")
+
+    def _show_startup_checks(self):
+        try:
+            checks = []
+            if not self.asr.is_ready():
+                checks.append("ASR 模型未就绪，请检查模型目录")
+            hw = len(self.asr._current_hotwords.split()) if self.asr._current_hotwords else 0
+            if hw < 10:
+                checks.append("当前热词较少，建议先做 Top-K 刷新")
+            if self.rule_engine.get_stats().get("错别字规则数", 0) < 5:
+                checks.append("纠错规则较少，建议补充 postprocess 规则")
+            if checks:
+                self.webview.js_show_toast("；".join(checks[:3]))
+        except Exception as e:
+            print(f"[Check] 失败: {e}")
         try:
             from qa_dialog import KnowledgeQADialog
             dlg = KnowledgeQADialog(self.qa_engine, self)
@@ -4017,7 +4318,7 @@ class WebViewApp(QMainWindow):
         self._refresh_templates()
 
     def _on_template_changed(self, tpl_name):
-        dept = self.current_dept if self.current_dept != "通用" else "内科"
+        dept = self._dept_for_templates()
         content = self.template_engine.get_template(dept, tpl_name)
         if content:
             # 将模板文本转为 HTML（高亮字段名）
@@ -4030,6 +4331,20 @@ class WebViewApp(QMainWindow):
         self._update_context_panel(field)
         # 设置 ASR 字段上下文
         self.asr.set_field_context(field)
+        # 刷新字段级 Top-K 热词
+        self._refresh_field_hotwords(field)
+
+    def _refresh_field_hotwords(self, field):
+        try:
+            topk = self._get_topk_engine()
+            if not topk or not field:
+                return
+            prompt_pack = topk.build_field_prompt_pack(field=field, dept=self.current_dept, doctor_id=self.current_user.get("id") if isinstance(self.current_user, dict) else None, top_k=220)
+            self.asr.set_prompt_pack(prompt_pack)
+            self.asr.apply_prompt_pack()
+            self.asr.set_hotwords(self.current_dept)
+        except Exception as e:
+            print(f"[Main] 刷新字段级热词失败: {e}")
 
     def _on_chip_click(self, word):
         self.webview.js_insert_text(word)
@@ -4063,6 +4378,111 @@ class WebViewApp(QMainWindow):
             escaped = re.sub(pattern, f'<span class="fl">{f}：</span>', escaped)
         escaped = escaped.replace('\n', '<br>')
         return escaped
+
+    def _on_asr_accept(self):
+        try:
+            text = getattr(self, '_last_asr_preview_text', '') or ''
+            if text:
+                self.webview.js_insert_text(text)
+            self.webview.js_set_asr_preview('')
+            self.webview.js_set_asr_actions(False)
+            self._last_asr_preview_text = ''
+        except Exception as e:
+            print(f"[ASR] 接受预览失败: {e}")
+
+    def _on_asr_reject(self):
+        try:
+            self.webview.js_set_asr_preview('')
+            self.webview.js_set_asr_actions(False)
+            self._last_asr_preview_text = ''
+        except Exception as e:
+            print(f"[ASR] 拒绝预览失败: {e}")
+
+    def _on_asr_retry(self):
+        try:
+            self._stop_recording()
+            self.webview.js_set_asr_preview('')
+            self.webview.js_set_asr_actions(False)
+            self._last_asr_preview_text = ''
+            self._toggle_recording()
+        except Exception as e:
+            print(f"[ASR] 重试失败: {e}")
+
+    def _show_qa_for_selection(self):
+        try:
+            text = getattr(self, '_last_editor_text', '') or ''
+            if not text:
+                # 兜底：异步从编辑器取文本（get_editor_text 是回调式异步）
+                self.webview.get_editor_text(lambda t: self._do_show_qa(t or ''))
+                return
+            self._do_show_qa(text)
+        except Exception as e:
+            print(f"[QA] 失败: {e}")
+
+    def _do_show_qa(self, text):
+        try:
+            suggestions = self._build_qa_suggestions(text)
+            print(f"[QA] 文本{len(text)}字 -> 提示{len(suggestions)}字")
+            self.webview.js_set_qa(suggestions)
+        except Exception as e:
+            print(f"[QA] 构建提示失败: {e}")
+
+    def _show_history(self):
+        try:
+            if not self.db:
+                self.webview.js_set_history('数据库未初始化')
+                return
+            user_id = self.current_user.get("id") if isinstance(self.current_user, dict) else None
+            records = self.db.list_records(user_id=user_id, limit=20)
+            if not records:
+                self.webview.js_set_history('暂无最近病历')
+                return
+            lines = []
+            for rec in records[:8]:
+                title = rec.get('patient_name') or ('病历#' + str(rec.get('record_id')))
+                snippet = (rec.get('content') or '').strip().splitlines()[0]
+                lines.append(f"{title}：{snippet}")
+            self.webview.js_set_history('<br>'.join(lines))
+        except Exception as e:
+            print(f"[History] 失败: {e}")
+
+    def _build_qa_suggestions(self, text):
+        # 先判断病历是否有实质内容（剥离字段名与标点）
+        stripped = text or ''
+        for f in self.classifier.STANDARD_FIELDS:
+            stripped = stripped.replace(f, '')
+        stripped = re.sub(r'[：:\s，,。、；;（）()]+', '', stripped)
+        if len(stripped) < 4:
+            return ('当前病历还没有实质内容。<br>'
+                    '语音或打字填入内容后，这里会自动提示<b>可能疾病、用药、检查、质控提醒</b>。'
+                    '<br><br>例：录入"患者男性，56岁，主诉胸痛2小时，'
+                    '初步诊断冠心病"后再按 ⌘/ 试试。')
+        items = []
+        try:
+            diseases = self.qa_engine.extract_diseases(text)[:5]
+            if diseases:
+                items.append('<b>可能疾病</b>：' + '、'.join(diseases))
+        except Exception:
+            pass
+        try:
+            drugs = self.qa_engine.extract_drugs(text)[:8]
+            if drugs:
+                items.append('<b>用药</b>：' + '、'.join(drugs))
+        except Exception:
+            pass
+        try:
+            exams = self.qa_engine.extract_exams(text)[:8]
+            if exams:
+                items.append('<b>检查</b>：' + '、'.join(exams))
+        except Exception:
+            pass
+        try:
+            alerts = self.rule_engine.realtime_checks(text, dept=self.current_dept, field=getattr(self, '_current_field', ''))[:8]
+            if alerts:
+                items.append('<b>质控提醒</b>：<br>' + '<br>'.join([a.get('message','') for a in alerts]))
+        except Exception:
+            pass
+        return '<br><br>'.join(items) if items else '已扫描病历文本，未命中知识图谱中的疾病/药品/检查实体。可尝试补充诊断、用药或检查描述。'
 
     def closeEvent(self, event):
         if self.is_listening:
