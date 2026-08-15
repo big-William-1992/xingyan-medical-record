@@ -100,6 +100,7 @@ hiddenimports = [
     'hl7_fhir_exporter',
     # FunASR 相关
     'funasr',
+    'modelscope',  # 模型自动下载
     'torch',
     'torchaudio',
     'numpy',

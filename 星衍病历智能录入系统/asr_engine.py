@@ -506,6 +506,14 @@ class ASREngine:
             if os.path.exists(ft_ckpt):
                 extra_kwargs["init_param"] = ft_ckpt
                 print("[ASR] 检测到医学微调权重，加载 paraformer_medical.pt")
+            
+            # 检查模型是否已下载
+            if not self._check_model_exists():
+                print("[ASR] 模型文件不存在，开始自动下载...")
+                if not self._download_models():
+                    print("[ASR] ❌ 模型下载失败，语音识别功能不可用")
+                    return
+            
             print("[ASR] 正在加载 Paraformer + VAD + 标点模型...")
             self.model = AutoModel(
                 model="paraformer-zh",
@@ -516,11 +524,70 @@ class ASREngine:
                 disable_log=True,
                 **extra_kwargs,
             )
-            print("[ASR] 模型加载成功")
+            print("[ASR] ✅ 模型加载成功")
         except Exception as e:
-            print(f"[ASR] 模型加载失败: {e}")
+            print(f"[ASR] ❌ 模型加载失败: {e}")
             import traceback
             traceback.print_exc()
+    
+    def _check_model_exists(self):
+        """检查模型文件是否已下载"""
+        try:
+            # FunASR 默认缓存目录
+            cache_dir = os.path.expanduser("~/.cache/modelscope/hub")
+            
+            # 检查关键模型目录
+            models = [
+                "paraformer-zh",
+                "fsmn-vad",
+                "ct-punc"
+            ]
+            
+            for model_name in models:
+                model_path = os.path.join(cache_dir, model_name)
+                if not os.path.exists(model_path):
+                    print(f"[ASR] 模型不存在: {model_name}")
+                    return False
+            
+            print("[ASR] ✅ 模型文件已存在")
+            return True
+        except Exception as e:
+            print(f"[ASR] 检查模型时出错: {e}")
+            return False
+    
+    def _download_models(self):
+        """自动下载 FunASR 模型"""
+        try:
+            print("[ASR] 📥 开始下载语音识别模型（约 1GB）...")
+            print("[ASR] 这可能需要几分钟，请耐心等待...")
+            
+            # 使用 modelscope 下载
+            from modelscope import snapshot_download
+            
+            models = [
+                ("paraformer-zh", "iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-pytorch"),
+                ("fsmn-vad", "iic/speech_fsmn_vad_zh-cn-16k-common-pytorch"),
+                ("ct-punc", "iic/punc_ct-transformer_cn-en-common-vocab471067-large"),
+            ]
+            
+            for i, (model_name, model_id) in enumerate(models, 1):
+                print(f"[ASR] [{i}/{len(models)}] 下载 {model_name}...")
+                try:
+                    snapshot_download(model_id, cache_dir=os.path.expanduser("~/.cache/modelscope/hub"))
+                    print(f"[ASR] ✅ {model_name} 下载完成")
+                except Exception as e:
+                    print(f"[ASR] ❌ {model_name} 下载失败: {e}")
+                    return False
+            
+            print("[ASR] ✅ 所有模型下载完成！")
+            return True
+        except ImportError:
+            print("[ASR] ❌ modelscope 未安装，无法自动下载模型")
+            print("[ASR] 请手动安装: pip install modelscope")
+            return False
+        except Exception as e:
+            print(f"[ASR] ❌ 下载模型时出错: {e}")
+            return False
 
     def is_ready(self):
         return self.model is not None

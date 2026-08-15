@@ -12,11 +12,11 @@ block_cipher = None
 BASE = os.path.abspath('.')
 
 # 需要打包的数据文件（HTML前端、模板、知识图谱、模型配置等）
+# 只包含存在的文件
 datas = [
     ('frontend', 'frontend'),
     ('templates', 'templates'),
     ('kg_data', 'kg_data'),
-    ('model', 'model'),
     ('field_words.json', '.'),
     ('field_presets.json', '.'),
     ('hotwords.txt', '.'),
@@ -24,6 +24,14 @@ datas = [
     ('medical_dict.json', '.'),
     ('asr_confusion_pairs.json', '.'),
 ]
+
+# 可选数据文件（如果存在则打包）
+import os
+if os.path.exists('model'):
+    datas.append(('model', 'model'))
+    print("✅ 包含 model 目录")
+else:
+    print("⚠️  model 目录不存在，跳过（首次运行会自动下载模型）")
 
 # 隐式导入（PyInstaller 可能检测不到的模块）
 hiddenimports = [
