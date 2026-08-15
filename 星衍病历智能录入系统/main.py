@@ -17,6 +17,7 @@ del _os_pre, _venv_qt
 import json
 import time
 import re
+import threading
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -28,7 +29,7 @@ from PyQt5.QtWidgets import (
     QAction, QMenu, QScrollArea, QFrame, QInputDialog
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread
-from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QTextCharFormat
+from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor, QTextCharFormat, QTextDocument
 
 # QtWebEngine 必须在 QApplication 创建前导入
 try:
@@ -2782,6 +2783,7 @@ class MedVoiceApp(QMainWindow):
 
         # 恢复原文（从编辑器中撤销这条纠错）
         # 修复：只替换第一个匹配，避免 replace 替换所有相同文本导致误伤
+        text = self.text_edit.toPlainText()
         idx_in_text = text.find(corr)
         if idx_in_text >= 0:
             text = text[:idx_in_text] + orig + text[idx_in_text + len(corr):]

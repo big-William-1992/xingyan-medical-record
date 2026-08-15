@@ -30,9 +30,9 @@ jobs:
       - name: Run flake8
         run: |
           # 检查语法错误和明显问题
-          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=venv,build,dist,.git,__pycache__,.pytest_cache
           # 检查代码风格（警告级别）
-          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+          flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics --exclude=venv,build,dist,.git,__pycache__,.pytest_cache
       
       - name: Run black (check only)
         run: |

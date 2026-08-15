@@ -36,7 +36,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QSplitter, QStatusBar, QToolTip, QFrame
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor, QPalette
+from PyQt5.QtGui import QFont, QColor, QPalette, QCursor
 
 
 # ─── 核心授权算法（与 license_manager.py 一致）─ ─

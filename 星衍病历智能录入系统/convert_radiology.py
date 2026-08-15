@@ -154,7 +154,7 @@ class RadiologyTermsConverter:
                 "term": "无回声区",
                 "description": "超声显示完全黑色区域",
                 "meaning": "液体结构，如囊肿、胆道、血管",
-                "posterior_enhancement": true,
+                "posterior_enhancement": True,
                 "examples": ["肝囊肿", "肾囊肿", "胆囊"]
             },
             {

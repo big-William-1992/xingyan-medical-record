@@ -64,7 +64,7 @@ class MemoryCache:
         # 找到最早过期的条目
         oldest_key = min(self._cache.keys(), 
                         key=lambda k: self._cache[k][1] or float('inf'))
-        del self._cache[olddest_key]
+        del self._cache[oldest_key]
     
     def stats(self) -> dict:
         """获取缓存统计信息"""
