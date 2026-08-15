@@ -313,7 +313,6 @@ class TestAudioWidgets(unittest.TestCase):
 
     def test_waveform_add_level(self):
         """波形图添加电平"""
-        app = QApplication.instance() or QApplication(sys.argv)
         from audio_widgets import WaveformWidget
         wf = WaveformWidget()
         wf.add_level(0.5)
@@ -325,7 +324,6 @@ class TestAudioWidgets(unittest.TestCase):
 
     def test_waveform_clear_on_stop(self):
         """停止录音时清空波形"""
-        app = QApplication.instance() or QApplication(sys.argv)
         from audio_widgets import WaveformWidget
         wf = WaveformWidget()
         wf.add_level(0.8)
