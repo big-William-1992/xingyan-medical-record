@@ -15,10 +15,11 @@ import wave
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
+from cache_manager import get_cache
 
 # ─── 项目路径 ───
 BASE_DIR = Path(__file__).parent
@@ -82,8 +83,81 @@ def get_db():
     return _db
 
 # ─── FastAPI App ───
+import logging
+from fastapi import Request
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+# 配置日志审计
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('audit.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger('medical_record_audit')
+
+# 请求频率限制
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="星衍AI · 智能病历录入", version="2.0")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.state.limiter = limiter
+
+# CORS 配置：支持本机和局域网访问
+ALLOWED_ORIGINS = [
+    "http://localhost:8765",
+    "http://localhost:3000",
+    "http://127.0.0.1:8765",
+    "http://127.0.0.1:3000",
+]
+
+# 动态添加局域网 IP 段（192.168.x.x, 10.x.x.x, 172.16-31.x.x）
+def get_lan_origins():
+    """生成局域网允许的源"""
+    origins = []
+    # 常见局域网段
+    for i in range(1, 255):
+        origins.append(f"http://192.168.{i}.1:8765")  # 路由器网关
+        origins.append(f"http://192.168.1.{i}:8765")   # 常见家庭网络
+        origins.append(f"http://10.0.0.{i}:8765")      # 常见企业网络
+    return origins
+
+# 合并所有允许的源
+ALL_ALLOWED_ORIGINS = ALLOWED_ORIGINS + get_lan_origins()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALL_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
+)
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    logger.warning(f"Rate limit exceeded: {request.client.host}")
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "请求过于频繁，请稍后再试"}
+    )
+
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    """审计中间件：记录所有API请求"""
+    start_time = time.time()
+    response = await call_next(request)
+    process_time = time.time() - start_time
+    
+    logger.info(
+        f"{request.method} {request.url.path} - "
+        f"Status: {response.status_code} - "
+        f"Client: {request.client.host} - "
+        f"Time: {process_time:.3f}s"
+    )
+    return response
 
 # 静态文件（前端）
 FRONTEND_DIR = BASE_DIR / "frontend"
@@ -181,14 +255,41 @@ async def add_preset(field: str, body: dict = Body(...)):
     return {"ok": True}
 
 @app.get("/api/kg/drug/{name}")
-async def kg_drug(name: str):
+@limiter.limit("30/minute")
+async def kg_drug(request: Request, name: str):
+    """查询药物信息（限制：30次/分钟）"""
+    cache = get_cache()
+    cache_key = f"drug:{name}"
+    
+    # 尝试从缓存获取
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return cached_result
+    
+    # 查询数据库
     kg = get_kg()
     info = kg.get_drug_info(name)
     treats = kg.query_by_obj(name, "TREATED_BY")[:10] if info else []
-    return {"name": name, "info": info, "treats": treats}
+    result = {"name": name, "info": info, "treats": treats}
+    
+    # 缓存结果（1小时）
+    cache.set(cache_key, result, ttl=3600)
+    
+    return result
 
 @app.get("/api/kg/disease/{name}")
-async def kg_disease(name: str):
+@limiter.limit("30/minute")
+async def kg_disease(request: Request, name: str):
+    """查询疾病信息（限制：30次/分钟）"""
+    cache = get_cache()
+    cache_key = f"disease:{name}"
+    
+    # 尝试从缓存获取
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return cached_result
+    
+    # 查询数据库
     kg = get_kg()
     entity = kg.entities.get(name, {})
     symptoms = kg.get_symptoms_for_disease(name)[:15]
@@ -196,7 +297,7 @@ async def kg_disease(name: str):
     exams = kg.get_exams_for_disease(name)[:10]
     complicates = kg.query_by_subj(name, "COMPLICATES")[:10]
     dept = kg.query_by_subj(name, "BELONGS_TO")[:3]
-    return {
+    result = {
         "name": name,
         "desc": entity.get("描述", ""),
         "system": entity.get("系统", ""),
@@ -206,9 +307,16 @@ async def kg_disease(name: str):
         "complicates": complicates,
         "department": dept,
     }
+    
+    # 缓存结果（1小时）
+    cache.set(cache_key, result, ttl=3600)
+    
+    return result
 
 @app.get("/api/kg/query")
-async def kg_query(q: str = Query(...)):
+@limiter.limit("20/minute")
+async def kg_query(request: Request, q: str = Query(...)):
+    """知识图谱查询（限制：20次/分钟）"""
     qa = get_qa()
     result = qa.answer(q)
     # 从回答文本中提取药物名，查询说明书（使用同一个qa实例的kg）
@@ -266,6 +374,84 @@ async def list_records():
     return [{"id": r["id"], "patient_name": r.get("patient_name", ""),
              "department": r.get("department", ""), "updated_at": r.get("updated_at", "")}
             for r in (records or [])[:50]]
+
+@app.get("/api/records/{record_id}/export/{format}")
+async def export_record(record_id: str, format: str):
+    """导出病历为HL7/FHIR格式"""
+    from hl7_fhir_exporter import MedicalRecordConverter
+    
+    db = get_db()
+    record = db.get_record(record_id)
+    if not record:
+        return {"ok": False, "msg": "病历不存在"}
+    
+    # 解析病历内容为结构化数据（简化示例）
+    content = record.get("content", "")
+    import re
+    
+    # 提取基本信息
+    patient_data = {
+        "patient_id": record_id,
+        "name": "",
+        "gender": "unknown",
+        "birth_date": "",
+        "phone": "",
+        "address": ""
+    }
+    
+    # 尝试提取姓名
+    name_match = re.search(r'姓名[：:]\s*([^\s\n]+)', content)
+    if name_match:
+        patient_data["name"] = name_match.group(1).strip()
+    
+    # 尝试提取性别
+    gender_match = re.search(r'性别[：:]\s*([男女])', content)
+    if gender_match:
+        patient_data["gender"] = "male" if gender_match.group(1) == "男" else "female"
+    
+    # 尝试提取年龄
+    age_match = re.search(r'年龄[：:]\s*(\d+)', content)
+    if age_match:
+        patient_data["age"] = age_match.group(1)
+    
+    # 构建病历数据结构
+    record_data = {
+        "patient": patient_data,
+        "encounter": {
+            "encounter_id": record_id,
+            "patient_id": record_id,
+            "inpatient": False,
+            "admit_date": record.get("created_at", ""),
+            "doctor_name": ""
+        },
+        "conditions": [],
+        "medications": []
+    }
+    
+    # 尝试提取诊断
+    diagnosis_match = re.search(r'初步诊断[：:]\s*([^\n]+)', content)
+    if diagnosis_match:
+        record_data["conditions"].append({
+            "condition_id": f"C{record_id}",
+            "patient_id": record_id,
+            "encounter_id": record_id,
+            "diagnosis": diagnosis_match.group(1).strip(),
+            "recorded_date": record.get("created_at", "")
+        })
+    
+    # 导出
+    converter = MedicalRecordConverter()
+    
+    if format == "hl7":
+        hl7_message = converter.convert_to_hl7(record_data)
+        return {"ok": True, "format": "hl7", "content": hl7_message}
+    
+    elif format == "fhir":
+        fhir_bundle = converter.convert_to_fhir(record_data)
+        return {"ok": True, "format": "fhir", "content": fhir_bundle}
+    
+    else:
+        return {"ok": False, "msg": f"不支持的格式: {format}"}
 
 @app.post("/api/correct")
 async def correct_text(body: dict = Body(...)):

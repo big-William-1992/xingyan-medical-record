@@ -30,12 +30,26 @@ os.chdir(BASE_DIR)
 sys.path.insert(0, BASE_DIR)
 
 # ─── 配置 ───
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"  # 监听所有网络接口，允许手机局域网访问
+LOCAL_HOST = "127.0.0.1"  # 本机访问地址
 PORT = 8765
 WINDOW_TITLE = "星衍AI · 智能病历录入系统 v2.0"
 WINDOW_WIDTH = 1400
 WINDOW_HEIGHT = 900
 DEBUG = "--debug" in sys.argv
+
+
+def get_local_ip():
+    """获取本机局域网IP"""
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def find_free_port(start=8765, end=8800):
@@ -83,13 +97,22 @@ def main():
     import webview
 
     port = find_free_port()
-    url = f"http://{HOST}:{port}"
+    local_ip = get_local_ip()
+    local_url = f"http://{LOCAL_HOST}:{port}"
+    lan_url = f"http://{local_ip}:{port}"
 
     print(f"""
-    ╔══════════════════════════════════════════════╗
-    ║  星衍AI · 智能病历录入系统                    ║
-    ║  启动中... 端口: {port}                       ║
-    ╚══════════════════════════════════════════════╝
+    ╔══════════════════════════════════════════════════════╗
+    ║  星衍AI · 智能病历录入系统                            ║
+    ╠══════════════════════════════════════════════════════╣
+    ║  🖥️  本机访问: {local_url:<38} ║
+    ║  📱 手机访问: {lan_url:<38} ║
+    ║                                                      ║
+    ║  💡 手机使用方法:                                     ║
+    ║     1. 确保手机和电脑连接同一WiFi                     ║
+    ║     2. 手机浏览器打开上面的"手机访问"地址             ║
+    ║     3. 建议添加到主屏幕（像App一样使用）              ║
+    ╚══════════════════════════════════════════════════════╝
     """)
 
     # 后台启动 FastAPI
@@ -97,17 +120,18 @@ def main():
     server_thread.start()
 
     # 等待服务器就绪
-    if not wait_for_server(port):
+    if not wait_for_server(LOCAL_HOST, port):
         print("❌ 服务器启动超时，尝试用浏览器打开...")
-        webbrowser.open(url)
+        webbrowser.open(local_url)
         sys.exit(1)
 
-    print(f"✅ 服务器就绪: {url}")
+    print(f"✅ 服务器就绪: {local_url}")
+    print(f"📱 局域网访问: {lan_url}")
 
-    # 创建原生窗口
+    # 创建原生窗口（使用本机地址）
     window = webview.create_window(
         title=WINDOW_TITLE,
-        url=url,
+        url=local_url,
         width=WINDOW_WIDTH,
         height=WINDOW_HEIGHT,
         min_size=(1024, 700),

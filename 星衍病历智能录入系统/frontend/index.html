@@ -193,6 +193,158 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
 .qa-suggestions{padding:10px 18px 14px;display:flex;flex-wrap:wrap;gap:6px}
 .qa-sug{padding:5px 12px;border-radius:14px;font-size:11px;background:var(--surface);color:var(--text3);border:1px solid var(--border);cursor:pointer;transition:all .12s}
 .qa-sug:hover{background:var(--accent-dim);color:var(--accent);border-color:var(--accent)}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* ─── 移动端响应式 CSS ─── */
+/* ═══════════════════════════════════════════════════════════ */
+
+/* ─── 平板适配（≤1024px）─── */
+@media(max-width:1024px){
+  /* 侧边栏默认隐藏 */
+  .main{grid-template-columns:0px 1fr}
+  .sidebar{opacity:0;pointer-events:none}
+  .main.sidebar-open{grid-template-columns:240px 1fr}
+  .main.sidebar-open .sidebar{opacity:1;pointer-events:auto}
+  /* 编辑器减少内边距 */
+  .editor-scroll{padding:24px 28px 120px}
+  /* 上下文面板变窄 */
+  .ctx-panel{width:240px}
+}
+
+/* ─── 手机适配（≤768px）─── */
+@media(max-width:768px){
+  /* 工具栏：紧凑布局 */
+  .topbar{padding:8px 12px;gap:6px;flex-wrap:wrap}
+  .brand-name{font-size:13px}
+  .brand-ver{display:none}
+  .topbar select{padding:5px 8px;font-size:11px;min-width:0!important;max-width:100px}
+  .topbar .act{padding:5px 10px;font-size:10px}
+  .topbar .act.primary{padding:5px 12px}
+  /* 隐藏非核心按钮 */
+  .topbar .conn-dot{display:none}
+  /* 主区域：全宽 */
+  .main{grid-template-columns:0px 1fr!important}
+  .sidebar{display:none}
+  .main.sidebar-open{grid-template-columns:0px 1fr!important}
+  .main.sidebar-open .sidebar{
+    display:flex;position:fixed;top:0;left:0;bottom:0;width:280px;z-index:100;
+    background:var(--bg2);box-shadow:4px 0 24px rgba(0,0,0,.3)
+  }
+  /* 侧边栏遮罩 */
+  .main.sidebar-open::before{
+    content:'';position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:99
+  }
+  /* 字段导航栏：横向滚动 */
+  .field-nav{padding:8px 12px;gap:4px}
+  .field-pill{padding:4px 10px;font-size:10px}
+  /* 编辑器：全宽，减少内边距 */
+  .editor-scroll{padding:16px 16px 140px}
+  .editor{font-size:14px;line-height:2}
+  /* 上下文面板：变成底部抽屉 */
+  .ctx-toggle{display:none}
+  .ctx-panel{
+    position:fixed;bottom:0;left:0;right:0;top:auto;width:100%;
+    max-height:50vh;border-radius:16px 16px 0 0;
+    border-left:none;border-top:1px solid var(--border);
+    transform:translateY(100%);z-index:60;
+    box-shadow:0 -8px 32px rgba(0,0,0,.2)
+  }
+  .ctx-panel.closed{transform:translateY(100%)}
+  .ctx-panel:not(.closed){transform:translateY(0)}
+  .ctx-hd{padding:12px 16px 8px}
+  .ctx-scroll{padding:10px 12px}
+  /* 语音录入栏：适配小屏幕 */
+  .dict-bar{
+    bottom:16px;left:12px;right:12px;transform:none;
+    border-radius:20px;padding:8px 8px 8px 16px;gap:8px;
+    width:auto
+  }
+  .dict-bar .label{font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dict-bar .rec-btn{width:36px;height:36px}
+  .dict-bar .wave{display:none}
+  .dict-bar .time{font-size:10px}
+  /* 实时预览面板：全宽 */
+  .live-preview{
+    bottom:80px;left:12px;right:12px;width:auto;
+    transform:none;border-radius:12px
+  }
+  .live-preview.show{transform:translateY(0)}
+  .live-preview .lp-text{max-height:20vh;font-size:13px}
+  /* QA面板：全宽 */
+  .qa-drawer{width:100%;max-width:100%}
+  /* 状态栏：简化 */
+  .statusbar{padding:4px 12px;gap:8px;font-size:9px}
+  .statusbar .sep{display:none}
+  .statusbar .right{gap:8px}
+  .statusbar .right kbd{display:none}
+  #stDrug{display:none}
+  /* Toast：居中显示 */
+  .toast{left:16px;right:16px;text-align:center}
+}
+
+/* ─── 小手机适配（≤480px）─── */
+@media(max-width:480px){
+  /* 工具栏进一步简化 */
+  .topbar{padding:6px 8px;gap:4px}
+  .brand-mark{width:28px;height:28px;font-size:12px;border-radius:6px}
+  .brand-name{font-size:12px}
+  .topbar select{max-width:80px;font-size:10px}
+  .topbar .act{padding:4px 8px;font-size:9px}
+  /* 编辑器更小内边距 */
+  .editor-scroll{padding:12px 10px 140px}
+  .editor{font-size:13px;line-height:1.9}
+  /* 字段导航更小 */
+  .field-nav{padding:6px 8px}
+  .field-pill{padding:3px 8px;font-size:9px}
+  /* 语音栏更紧凑 */
+  .dict-bar{padding:6px 6px 6px 12px;gap:6px;bottom:10px;left:8px;right:8px}
+  .dict-bar .label{font-size:10px}
+  .dict-bar .rec-btn{width:32px;height:32px}
+  .dict-bar .rec-btn svg{width:14px;height:14px}
+  /* 预览面板 */
+  .live-preview{bottom:64px;left:8px;right:8px}
+  .live-preview .lp-text{max-height:16vh;font-size:12px}
+  /* 状态栏极简 */
+  .statusbar{padding:3px 8px;font-size:8px}
+  .statusbar .right span:first-child{display:none}
+}
+
+/* ─── 触摸优化 ─── */
+@media(hover:none)and(pointer:coarse){
+  /* 增大触摸目标 */
+  .field-pill{min-height:32px;display:flex;align-items:center}
+  .ctx-chip{min-height:36px;display:flex;align-items:center;padding:6px 14px}
+  .ctx-pre{padding:10px 14px;min-height:44px}
+  .sidebar-item{min-height:44px;padding:12px 16px}
+  .topbar .act{min-height:36px;display:flex;align-items:center}
+  .topbar select{min-height:36px}
+  .rec-btn{min-width:44px;min-height:44px}
+  /* 移除 hover 效果 */
+  .ctx-chip:hover{transform:none;box-shadow:none}
+  .topbar .act:hover{transform:none}
+  .topbar .act.primary:hover{transform:none}
+  /* 点击反馈 */
+  .ctx-chip:active{transform:scale(.95)}
+  .topbar .act:active{transform:scale(.95);opacity:.8}
+  .sidebar-item:active{background:var(--accent-dim)}
+  .field-pill:active{background:var(--accent-dim)}
+}
+
+/* ─── 横屏适配 ─── */
+@media(max-height:500px)and(orientation:landscape){
+  .editor-scroll{padding:8px 20px 100px}
+  .dict-bar{bottom:8px}
+  .live-preview{bottom:60px;max-height:30vh}
+  .ctx-panel{max-height:60vh}
+  .statusbar{display:none}
+}
+
+/* ─── 安全区域适配（刘海屏/底部横条）─── */
+@supports(padding:env(safe-area-inset-bottom)){
+  .dict-bar{bottom:calc(16px + env(safe-area-inset-bottom))}
+  .statusbar{padding-bottom:calc(4px + env(safe-area-inset-bottom))}
+  .ctx-panel{padding-bottom:env(safe-area-inset-bottom)}
+}
 </style>
 </head>
 <body>
@@ -316,8 +468,33 @@ document.addEventListener('DOMContentLoaded',()=>{
 
 function initUI(){
   $('#themeToggle').onclick=toggleTheme;
-  $('#btnSidebar').onclick=()=>$('#mainGrid').classList.toggle('collapsed');
+  // 侧边栏切换（桌面端折叠/展开，移动端覆盖层）
+  $('#btnSidebar').onclick=()=>{
+    const main=$('#mainGrid');
+    const isMobile=window.innerWidth<=768;
+    if(isMobile){
+      main.classList.toggle('sidebar-open');
+    }else{
+      main.classList.toggle('collapsed');
+    }
+  };
+  // 点击遮罩关闭侧边栏（移动端）
+  $('#mainGrid').addEventListener('click',(e)=>{
+    if(window.innerWidth<=768 && e.target===$('#mainGrid') && $('#mainGrid').classList.contains('sidebar-open')){
+      $('#mainGrid').classList.remove('sidebar-open');
+    }
+  });
+  // 上下文面板切换（桌面端用侧边按钮，移动端用底部抽屉）
   $('#ctxToggle').onclick=()=>{const p=$('#ctxPanel');p.classList.toggle('closed');$('#ctxToggle').textContent=p.classList.contains('closed')?'◀':'▶'};
+  // 移动端：添加上下文面板切换按钮（在字段导航栏右侧）
+  if(window.innerWidth<=768){
+    const ctxBtn=document.createElement('span');
+    ctxBtn.className='field-pill';
+    ctxBtn.textContent='📋 常用词';
+    ctxBtn.style.marginLeft='auto';
+    ctxBtn.onclick=()=>{$('#ctxPanel').classList.toggle('closed')};
+    $('#fieldNav').appendChild(ctxBtn);
+  }
   $('#recBtn').onclick=toggleRecording;
   $('#btnSave').onclick=saveRecord;
   $('#btnQA').onclick=()=>{$('#qaOverlay').classList.add('open');$('#qaInput').focus()};
@@ -336,6 +513,13 @@ function initUI(){
   ed.addEventListener('focus',function once(){
     ed.querySelectorAll('.val.empty').forEach(el=>{el.onclick=function(){if(this.classList.contains('empty')){this.textContent='';this.classList.remove('empty')}}});
     ed.removeEventListener('focus',once);
+  });
+  // 窗口大小变化时重置布局
+  window.addEventListener('resize',()=>{
+    const main=$('#mainGrid');
+    if(window.innerWidth>768){
+      main.classList.remove('sidebar-open');
+    }
   });
 }
 

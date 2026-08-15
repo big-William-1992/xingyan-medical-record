@@ -448,22 +448,26 @@ class MedicalClassifier:
         对一段文本进行字段分类
         返回：(字段名, 置信度)
         """
-        if not text or not text.strip():
-            return None, 0.0
+        try:
+            if not text or not text.strip():
+                return None, 0.0
 
-        scored = self.score_fields(text)
+            scored = self.score_fields(text)
 
-        # 返回得分最高的字段
-        if not scored:
-            return "主诉", 0.5
+            # 返回得分最高的字段
+            if not scored:
+                return "主诉", 0.5
 
-        best_field, best_score = scored[0]
+            best_field, best_score = scored[0]
 
-        # 如果最高分太低，默认归为主诉
-        if best_score < 0.3:
-            return "主诉", best_score
+            # 如果最高分太低，默认归为主诉
+            if best_score < 0.3:
+                return "主诉", best_score
 
-        return best_field, best_score
+            return best_field, best_score
+        except Exception as e:
+            print(f"[MedicalClassifier] 分类失败: {e}")
+            return "主诉", 0.1  # 返回默认值
 
     def score_fields(self, text):
         """返回文本在各字段下的得分，按降序排列 [(字段名, 得分), ...]"""

@@ -6,6 +6,7 @@ fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 websockets>=11.0
 python-multipart>=0.0.6
+slowapi>=0.1.8  # 请求频率限制
 
 # ─── GUI 桌面窗口 ───
 pywebview>=4.0
