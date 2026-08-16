@@ -37,6 +37,9 @@ _db = None
 def get_asr():
     global _asr
     if _asr is None:
+        # 测试/CI 环境跳过 ASR 引擎加载（避免触发 1GB 模型下载）
+        if os.environ.get("XINGYAN_SKIP_ASR") == "1":
+            return None
         from asr_engine import ASREngine
         _asr = ASREngine(model_path=str(BASE_DIR / "model"))
     return _asr
@@ -196,13 +199,13 @@ async def stats():
     """系统状态统计"""
     asr = get_asr()
     kg = get_kg()
-    hw_count = len(asr._current_hotwords.split()) if asr._current_hotwords else 0
+    hw_count = len(asr._current_hotwords.split()) if asr and asr._current_hotwords else 0
     return {
         "hotwords": hw_count,
         "kg_entities": len(kg.entities),
         "kg_relations": len(kg.relations),
         "drug_inserts": len(kg.drug_inserts),
-        "asr_ready": asr.is_ready(),
+        "asr_ready": bool(asr) and asr.is_ready(),
     }
 
 @app.get("/api/departments")
@@ -610,6 +613,10 @@ async def ws_asr(websocket: WebSocket):
     """
     await websocket.accept()
     asr = get_asr()
+    if asr is None:
+        await websocket.send_json({"type": "error", "msg": "ASR 引擎未启用（XINGYAN_SKIP_ASR=1）"})
+        await websocket.close()
+        return
     audio_buffer = bytearray()
     last_partial_len = 0
     # 每 2 秒音频做一次中间识别 (16000Hz * 2bytes * 2s = 64000 bytes)

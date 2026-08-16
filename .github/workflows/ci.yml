@@ -61,9 +61,10 @@ jobs:
 
       - name: Run lightweight tests only
         run: |
-          # 只运行不依赖大型包（funasr/torch/PyQt5）的测试
-          # test_core.py 是纯逻辑测试，不需要外部依赖
-          pytest tests/test_core.py -v --tb=short || echo "⚠️ Some tests skipped (missing optional deps)"
+          # 设置跳过 ASR 引擎加载（避免触发 1GB 模型下载）
+          export XINGYAN_SKIP_ASR=1
+          # 核心单元测试 + 集成测试
+          pytest tests/test_core.py tests/test_integration.py -v --tb=short || echo "⚠️ Some tests skipped (missing optional deps)"
 
   # ─── 文档检查 ───
   docs:
