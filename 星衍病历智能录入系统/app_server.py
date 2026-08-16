@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 from cache_manager import get_cache
 
@@ -185,6 +186,11 @@ async def serve_offline_asr_js():
 async def serve_service_worker():
     """Service Worker（离线缓存）"""
     return FileResponse(FRONTEND_DIR / "service-worker.js", media_type="application/javascript")
+
+# sherpa-onnx WASM 离线语音识别资源（引擎 + 模型，约 300MB）
+WASM_DIR = FRONTEND_DIR / "wasm"
+if WASM_DIR.exists():
+    app.mount("/wasm", StaticFiles(directory=str(WASM_DIR)), name="wasm")
 
 # ═══════════════════════════════════════════════════
 # REST API
