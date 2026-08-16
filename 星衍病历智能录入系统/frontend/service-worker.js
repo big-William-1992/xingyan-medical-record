@@ -8,6 +8,7 @@ const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/offline.js',
+  '/offline-asr.js',
   '/audio-processor.js',
   '/api/departments',
 ];

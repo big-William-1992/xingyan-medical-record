@@ -173,6 +173,11 @@ async def serve_offline_js():
     """离线模式前端模块"""
     return FileResponse(FRONTEND_DIR / "offline.js", media_type="application/javascript")
 
+@app.get("/offline-asr.js")
+async def serve_offline_asr_js():
+    """离线语音识别模块（sherpa-onnx WASM）"""
+    return FileResponse(FRONTEND_DIR / "offline-asr.js", media_type="application/javascript")
+
 @app.get("/service-worker.js")
 async def serve_service_worker():
     """Service Worker（离线缓存）"""

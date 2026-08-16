@@ -428,6 +428,7 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
 </div>
 
 <script src="/offline.js"></script>
+<script src="/offline-asr.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════
 // 星衍AI 前端 — 完整交互逻辑
@@ -897,8 +898,45 @@ function addOfflineToolbarButton(){
         if(result.synced>0) toast(`✅ 已同步 ${result.synced} 条`);
       }
     }
+    // 预下载离线语音识别模型（有网时提前加载，断网可用）
+    if(window.XingyanOfflineASR && navigator.onLine){
+      setTimeout(async ()=>{
+        const ok = await window.XingyanOfflineASR.loadOfflineModel();
+        if(ok) console.log('[Offline] 离线语音识别模型已预加载');
+      }, 5000); // 页面加载5秒后后台预加载
+    }
   }, 3000);
 })();
+
+// ─── 离线模式录音（断网时使用本地 sherpa-onnx 识别）───
+async function startOfflineRecording(){
+  try{
+    const rec = await window.XingyanOfflineASR.recordOfflineAudio(30);
+    $('#dictBar').classList.add('recording');
+    $('#recBtn').classList.remove('idle');
+    $('#recBtn').classList.add('active');
+    $('#dictLabel').textContent='📴 离线识别中 · 请说话...';
+
+    // 30秒后自动停止并识别
+    setTimeout(async ()=>{
+      $('#dictBar').classList.remove('recording');
+      $('#recBtn').classList.remove('active');
+      $('#recBtn').classList.add('idle');
+      $('#dictLabel').textContent='离线识别中...';
+      
+      const result = await window.XingyanOfflineASR.recognizeOffline(rec.samples, rec.sampleRate);
+      if(result.ok && result.text){
+        insertText(result.text + '\n');
+        toast(`📴 离线识别: ${result.text.slice(0, 20)}...`);
+      }else{
+        toast('❌ 离线识别失败：' + (result.error || '未识别到语音'));
+      }
+      $('#dictLabel').textContent='按 F5 开始语音录入';
+    }, 30000);
+  }catch(e){
+    toast('❌ 离线录音失败：' + e.message);
+  }
+}
 </script>
 </body>
 </html>

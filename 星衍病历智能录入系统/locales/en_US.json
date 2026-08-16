@@ -1,0 +1,98 @@
+{
+  "app": {
+    "title": "XingyanAI · Intelligent Medical Record System",
+    "version": "v2.0",
+    "subtitle": "Intelligent Medical Records"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "close": "Close",
+    "confirm": "Confirm",
+    "delete": "Delete",
+    "edit": "Edit",
+    "add": "Add",
+    "search": "Search",
+    "loading": "Loading...",
+    "error": "Error",
+    "success": "Success",
+    "warning": "Warning",
+    "info": "Info",
+    "yes": "Yes",
+    "no": "No"
+  },
+  "topbar": {
+    "department": "Department",
+    "template": "Template",
+    "record": "Record",
+    "mode": "Mode",
+    "microphone": "Microphone",
+    "correct": "Correct",
+    "clear": "Clear",
+    "export": "Export",
+    "copy": "Copy All",
+    "phrase": "Phrases",
+    "autofill": "Auto-fill",
+    "apply": "Apply",
+    "more": "More",
+    "saveRecord": "Save Record",
+    "library": "Library",
+    "backup": "Backup",
+    "qa": "QA",
+    "preload": "Preload"
+  },
+  "recording": {
+    "start": "Start Recording",
+    "stop": "Stop Recording",
+    "listening": "Listening... Please speak",
+    "recognizing": "Recognizing...",
+    "recognized": "Recognition Complete",
+    "waiting": "Waiting for input...",
+    "noAudio": "No speech detected. Please try again",
+    "confirm": "Please confirm the preview result",
+    "accept": "Accept",
+    "reject": "Reject",
+    "retry": "Retry",
+    "rejected": "Recognition result discarded",
+    "partial": "Recognizing"
+  },
+  "fields": {
+    "chiefComplaint": "Chief Complaint",
+    "presentIllness": "Present Illness",
+    "pastHistory": "Past History",
+    "personalHistory": "Personal History",
+    "marriageHistory": "Marriage History",
+    "familyHistory": "Family History",
+    "physicalExam": "Physical Exam",
+    "auxiliaryExam": "Auxiliary Exam",
+    "diagnosis": "Diagnosis",
+    "treatmentPlan": "Treatment Plan"
+  },
+  "qa": {
+    "title": "Medical Knowledge QA",
+    "placeholder": "Enter a medical question...",
+    "send": "Send",
+    "thinking": "Thinking...",
+    "networkError": "Network error. Please try again"
+  },
+  "offline": {
+    "mode": "Offline Mode",
+    "preload": "Preload",
+    "preloading": "Preloading data package...",
+    "preloaded": "Preload complete",
+    "preloadFail": "Preload failed",
+    "savedLocal": "Saved locally (offline). Will sync when back online",
+    "syncStart": "Found offline records. Syncing...",
+    "synced": "Synced",
+    "syncFailed": "records failed. Will retry automatically",
+    "asrPreload": "Offline ASR model preloaded",
+    "asrOffline": "Offline recognition... Please speak",
+    "asrResult": "Offline recognition",
+    "asrFail": "Offline recognition failed"
+  },
+  "notifications": {
+    "saved": "Saved",
+    "saveFailed": "Save failed",
+    "noContent": "No content to save"
+  }
+}

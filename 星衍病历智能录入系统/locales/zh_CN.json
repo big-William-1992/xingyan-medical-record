@@ -1,0 +1,98 @@
+{
+  "app": {
+    "title": "星衍AI · 智能病历录入系统",
+    "version": "v2.0",
+    "subtitle": "智能病历录入"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "close": "关闭",
+    "confirm": "确认",
+    "delete": "删除",
+    "edit": "编辑",
+    "add": "添加",
+    "search": "搜索",
+    "loading": "加载中...",
+    "error": "错误",
+    "success": "成功",
+    "warning": "警告",
+    "info": "提示",
+    "yes": "是",
+    "no": "否"
+  },
+  "topbar": {
+    "department": "科室",
+    "template": "模板",
+    "record": "录音",
+    "mode": "模式",
+    "microphone": "麦克风",
+    "correct": "纠错",
+    "clear": "清除",
+    "export": "导出",
+    "copy": "复制全文",
+    "phrase": "常用语",
+    "autofill": "首页→病程",
+    "apply": "一键套用",
+    "more": "更多",
+    "saveRecord": "保存病历",
+    "library": "病历库",
+    "backup": "备份",
+    "qa": "知识问答",
+    "preload": "预加载"
+  },
+  "recording": {
+    "start": "开始录音",
+    "stop": "停止录音",
+    "listening": "正在聆听，请开始说话...",
+    "recognizing": "正在识别...",
+    "recognized": "识别完成",
+    "waiting": "等待输入...",
+    "noAudio": "未识别到文字，请重试",
+    "confirm": "请确认预览结果",
+    "accept": "接受",
+    "reject": "拒绝",
+    "retry": "重听",
+    "rejected": "已拒绝本次识别结果",
+    "partial": "识别中"
+  },
+  "fields": {
+    "chiefComplaint": "主诉",
+    "presentIllness": "现病史",
+    "pastHistory": "既往史",
+    "personalHistory": "个人史",
+    "marriageHistory": "婚育史",
+    "familyHistory": "家族史",
+    "physicalExam": "体格检查",
+    "auxiliaryExam": "辅助检查",
+    "diagnosis": "初步诊断",
+    "treatmentPlan": "诊疗计划"
+  },
+  "qa": {
+    "title": "医学知识问答",
+    "placeholder": "输入医学问题，回车发送…",
+    "send": "发送",
+    "thinking": "思考中…",
+    "networkError": "网络错误，请重试"
+  },
+  "offline": {
+    "mode": "离线模式",
+    "preload": "预加载",
+    "preloading": "正在预加载数据包...",
+    "preloaded": "预加载完成",
+    "preloadFail": "预加载失败",
+    "savedLocal": "已保存到本地（离线），恢复网络后自动同步",
+    "syncStart": "发现离线记录，正在同步...",
+    "synced": "已同步",
+    "syncFailed": "条同步失败，将自动重试",
+    "asrPreload": "离线语音识别模型已预加载",
+    "asrOffline": "离线识别中 · 请说话...",
+    "asrResult": "离线识别",
+    "asrFail": "离线识别失败"
+  },
+  "notifications": {
+    "saved": "已保存",
+    "saveFailed": "保存失败",
+    "noContent": "没有内容可保存"
+  }
+}
