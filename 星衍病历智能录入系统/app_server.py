@@ -168,6 +168,16 @@ async def serve_audio_processor():
     """AudioWorklet 处理器文件"""
     return FileResponse(FRONTEND_DIR / "audio-processor.js", media_type="application/javascript")
 
+@app.get("/offline.js")
+async def serve_offline_js():
+    """离线模式前端模块"""
+    return FileResponse(FRONTEND_DIR / "offline.js", media_type="application/javascript")
+
+@app.get("/service-worker.js")
+async def serve_service_worker():
+    """Service Worker（离线缓存）"""
+    return FileResponse(FRONTEND_DIR / "service-worker.js", media_type="application/javascript")
+
 # ═══════════════════════════════════════════════════
 # REST API
 # ═══════════════════════════════════════════════════
@@ -374,6 +384,88 @@ async def list_records():
     return [{"id": r["id"], "patient_name": r.get("patient_name", ""),
              "department": r.get("department", ""), "updated_at": r.get("updated_at", "")}
             for r in (records or [])[:50]]
+
+# ═══════════════════════════════════════════════════
+# 离线模式 API
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/offline/package")
+async def offline_package(dept: str = Query("内科")):
+    """
+    预加载离线数据包（查房前调用，手机断网也能用）
+    返回：模板、字段常用词、常用句、患者列表
+    """
+    te = get_template_engine()
+    
+    # 1. 模板列表
+    templates = te.get_templates(dept)
+    template_list = [{"name": t["name"], "content": t["content"]} for t in templates]
+    
+    # 2. 字段常用词
+    field_words = {}
+    fw_path = BASE_DIR / "field_words.json"
+    try:
+        with open(fw_path, 'r', encoding='utf-8') as f:
+            field_words = json.load(f)
+    except Exception:
+        pass
+    
+    # 3. 常用句
+    presets = {}
+    presets_path = BASE_DIR / "field_presets.json"
+    try:
+        with open(presets_path, 'r', encoding='utf-8') as f:
+            presets = json.load(f)
+    except Exception:
+        pass
+    
+    # 4. 患者列表（最近50条）
+    db = get_db()
+    records = db.list_records(user_id=1) or []
+    patients = [{"id": r["id"], "patient_name": r.get("patient_name", ""),
+                 "department": r.get("department", ""), "updated_at": r.get("updated_at", ""),
+                 "content": r.get("content", "")}
+                for r in records[:50]]
+    
+    return {
+        "ok": True,
+        "timestamp": int(time.time()),
+        "department": dept,
+        "templates": template_list,
+        "field_words": field_words,
+        "presets": presets,
+        "patients": patients,
+    }
+
+@app.post("/api/offline/sync")
+async def offline_sync(body: dict = Body(...)):
+    """同步离线记录（手机恢复网络后批量上传）"""
+    records = body.get("records", [])
+    if not records or not isinstance(records, list):
+        return {"ok": False, "msg": "无同步数据"}
+    
+    db = get_db()
+    synced = []
+    failed = []
+    
+    for item in records:
+        try:
+            content = (item.get("content") or "").strip()
+            if not content:
+                continue
+            
+            import re
+            m = re.search(r'姓名[：:]\s*([^\s\n]{1,10})', content)
+            patient_name = m.group(1).strip() if m else ""
+            dept = item.get("department", "")
+            local_id = item.get("local_id", "")
+            
+            record_id = db.create_record(1, patient_name, dept, "", content, "草稿")
+            synced.append({"local_id": local_id, "server_id": record_id, "ok": True})
+        except Exception as e:
+            failed.append({"local_id": item.get("local_id", ""), "error": str(e)})
+    
+    return {"ok": True, "synced": synced, "failed": failed}
 
 @app.get("/api/records/{record_id}/export/{format}")
 async def export_record(record_id: str, format: str):
