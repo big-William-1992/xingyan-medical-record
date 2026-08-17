@@ -69,6 +69,3 @@ webview_main.html
 webview_editor.html
 webview_editor.py
 webview_bridge.py
-
-# 离线语音识别 WASM 模型（大文件，用 download_offline_asr.py 下载）
-frontend/wasm/

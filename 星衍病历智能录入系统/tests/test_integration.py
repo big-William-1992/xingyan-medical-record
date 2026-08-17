@@ -46,14 +46,11 @@ class TestModuleIntegration:
         assert kg is not None
     
     def test_asr_engine_initialization(self):
-        """测试ASR引擎初始化（CI/无模型环境自动跳过）"""
-        # ASREngine 构造会检查并下载模型（约1GB），CI 和本地无模型环境不可执行
-        import os
-        if os.environ.get("XINGYAN_SKIP_ASR") == "1":
-            pytest.skip("XINGYAN_SKIP_ASR=1，跳过 ASR 测试")
+        """测试ASR引擎初始化"""
         try:
             from asr_engine import ASREngine
             asr = ASREngine()
+            # 不测试实际识别，只测试初始化
             assert asr is not None
         except Exception as e:
             pytest.skip(f"ASR引擎初始化失败（可能缺少模型）: {e}")
@@ -160,15 +157,12 @@ class TestDataFlow:
     def test_correction_feedback_flow(self):
         """测试纠错反馈流程"""
         from correction_feedback import CorrectionFeedback
-    
+        
         feedback = CorrectionFeedback()
-    
-        # 记录接受（log_corrections + log_accept_all）
-        feedback.log_corrections([
-            {"原文": "发烧", "修正": "发热", "分类": "错别字", "级别": "", "type": ""}
-        ], source="auto")
-        feedback.log_accept_all()
-    
+        
+        # 记录接受
+        feedback.log_acceptance("发烧", "发热", "auto")
+        
         # 获取统计
         stats = feedback.get_stats()
         assert isinstance(stats, dict)

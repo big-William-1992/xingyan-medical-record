@@ -307,11 +307,9 @@ try:
 except ImportError:
     HAS_PYQT5 = False
 
-# 音频组件测试需要真实图形显示环境（QApplication 在无头/CI 环境会 C 级崩溃），
-# 仅在本地有显示器时手动运行：python -m pytest tests/test_core.py -k AudioWidgets
-@unittest.skip("音频组件测试需要图形显示环境，请在有显示器的本地环境手动运行")
+@unittest.skipUnless(HAS_PYQT5, "PyQt5 在 CI 中不可用")
 class TestAudioWidgets(unittest.TestCase):
-    """audio_widgets 组件逻辑（需图形环境）"""
+    """audio_widgets 组件逻辑"""
 
     def test_waveform_add_level(self):
         """波形图添加电平"""

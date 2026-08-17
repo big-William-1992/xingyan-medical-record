@@ -62,8 +62,76 @@ from audio_widgets import WaveformWidget, AudioPlayerWidget, AsrPreviewPanel
 from diff_review_dialog import DiffReviewDialog
 from correction_memory import get_memory
 from topk_engine import get_topk_engine
-from recording_handler import RecordingHandler
-from threads import ListenThread, CorrectThread, DiagnosisThread
+
+
+# ==================== 语音识别线程 ====================
+class ListenThread(QThread):
+    text_ready = pyqtSignal(str)
+    partial_text = pyqtSignal(str)
+    status_changed = pyqtSignal(str)
+
+    def __init__(self, asr_engine):
+        super().__init__()
+        self.asr = asr_engine
+        self.final_text = ""
+        self._polling = True
+        self._recording = False
+
+    def run(self):
+        self.status_changed.emit("正在录音...")
+        self._recording = True
+
+        # 流式回调：每段识别结果通过 partial_text 信号实时推送到 UI
+        def _stream_partial(text):
+            if text and self._recording:
+                self.partial_text.emit(text)
+
+        self.asr.start_listening(on_partial=_stream_partial)
+
+        # 等录音结束
+        while self._recording and self.asr.is_listening:
+            self.msleep(100)
+
+        self.status_changed.emit("正在识别...")
+        # 停止录音并获取最终文本（全量精确识别，含 LM 重打分）
+        text = self.asr.stop_listening()
+        self.final_text = text
+        self.text_ready.emit(text)
+        self.status_changed.emit("识别完成")
+
+    def stop(self):
+        self._recording = False
+
+
+# ==================== 纠错线程 ====================
+class CorrectThread(QThread):
+    correction_done = pyqtSignal(str, list)  # 修正后文本, 纠错日志
+
+    def __init__(self, corrector, text):
+        super().__init__()
+        self.corrector = corrector
+        self.text = text
+
+    def run(self):
+        corrected, log = self.corrector.correct(self.text)
+        self.correction_done.emit(corrected, log)
+
+
+# ==================== AI 辅助诊断线程 ====================
+class DiagnosisThread(QThread):
+    analysis_done = pyqtSignal(dict)
+
+    def __init__(self, assistant, text):
+        super().__init__()
+        self.assistant = assistant
+        self.text = text
+
+    def run(self):
+        try:
+            result = self.assistant.analyze(self.text)
+        except Exception as e:
+            result = {"error": str(e)}
+        self.analysis_done.emit(result)
 
 
 # ==================== 规则管理对话框 ====================
@@ -1346,9 +1414,6 @@ class MedVoiceApp(QMainWindow):
         self.asr_preview.retried.connect(self._on_preview_retry)
         self._pending_asr_text = ''  # 待确认的识别结果
 
-        # 录音事件处理器（录音/识别/预览确认逻辑，已从 main.py 拆分）
-        self.recorder = RecordingHandler(self)
-
         # 实时录音波形图（录音时显示滚动音量柱状图）
         self.waveform = WaveformWidget()
         self.waveform.setVisible(False)
@@ -1977,8 +2042,11 @@ class MedVoiceApp(QMainWindow):
         return result
 
     def _toggle_recording(self):
-        """开始/停止录音（委托给 RecordingHandler）"""
-        self.recorder.toggle_recording()
+        """开始/停止录音"""
+        if not self.is_listening:
+            self._start_recording()
+        else:
+            self._stop_recording()
 
     def moveEvent(self, event):
         """主窗口移动时，悬浮预览面板跟随定位"""
@@ -1995,12 +2063,110 @@ class MedVoiceApp(QMainWindow):
             panel.reposition()
 
     def _start_recording(self):
-        """开始录音（委托给 RecordingHandler）"""
-        self.recorder.start_recording()
+        """开始录音"""
+        if not self.asr.is_ready():
+            QMessageBox.warning(
+                self, "提示",
+                "语音识别引擎未就绪。\n"
+                "请确认已安装 FunASR 和 SenseVoice 模型。\n\n"
+                "运行：pip install funasr modelscope\n"
+                "模型会自动下载到 ~/.cache/modelscope/"
+            )
+            return
+
+        # 根据模式设置录音时长
+        mode = self.record_mode_combo.currentText()
+        if "60" in mode:
+            self.asr.recording_duration = 60
+        elif "120" in mode:
+            self.asr.recording_duration = 120
+        else:
+            self.asr.recording_duration = 30  # 手动停止模式也设一个超时
+
+        self.record_btn.setText("⏹ 停止录音")
+        self.record_btn.setChecked(True)
+        self.is_listening = True
+        self.partial_text = ""
+        self.text_edit.setFocus()
+
+        # 重置悬浮预览面板（隐藏并清空，等待新的流式结果）
+        self.asr_preview.reset()
+        self.asr_preview.hide_panel()
+        self._pending_asr_text = ''
+
+        # 保存录音前的编辑器内容（流式显示时保留已有文本）
+        self._stream_base_text = self.text_edit.toPlainText()
+        self._stream_has_partial = False  # 是否已收到流式结果
+        self.partial_label.setText("▍正在聆听，请开始说话...")
+
+        # 开始录音时长计时
+        self._record_start_ts = time.time()
+        self._duration_timer.start()
+        self.recording_indicator.start()
+
+        # 显示波形图并开始轮询音量
+        self.waveform.setVisible(True)
+        self.waveform.set_active(True)
+        self._wave_timer.start()
+
+        # 模板动态热词增强：根据当前模板内容提升相关词汇识别率
+        template_name = self.template_combo.currentText()
+        if template_name and self.current_dept:
+            tpl_content = self.template_engine.get_template(self.current_dept, template_name)
+            if tpl_content:
+                self.asr.boost_hotwords_for_template(tpl_content)
+
+        # 字段上下文检测：根据编辑器末尾内容判断当前字段
+        self._update_field_context()
+
+        self.listen_thread = ListenThread(self.asr)
+        self.listen_thread.text_ready.connect(self._on_recognized)
+        self.listen_thread.partial_text.connect(self._on_partial)
+        self.listen_thread.status_changed.connect(self.status_bar.showMessage)
+
+        # 连续模式：到时间自动停止
+        mode = self.record_mode_combo.currentText()
+        if "连续" in mode:
+            self._auto_stop_timer = QTimer()
+            self._auto_stop_timer.setSingleShot(True)
+            self._auto_stop_timer.timeout.connect(self._stop_recording)
+            self._auto_stop_timer.start(self.asr.recording_duration * 1000)
+
+        self.listen_thread.start()
 
     def _stop_recording(self):
-        """停止录音（委托给 RecordingHandler）"""
-        self.recorder.stop_recording()
+        """停止录音"""
+        self.is_listening = False
+        self.record_btn.setText("🎤 开始录音")
+        self.record_btn.setChecked(False)
+        self.crash_logger.log_event("录音停止")
+
+        # 停止录音时长计时
+        self._duration_timer.stop()
+        self._record_start_ts = None
+        self.recording_indicator.stop()
+
+        # 停止波形图
+        self._wave_timer.stop()
+        self.waveform.set_active(False)
+        self.waveform.setVisible(False)
+
+        # 停止自动停止计时器
+        if hasattr(self, '_auto_stop_timer') and self._auto_stop_timer:
+            self._auto_stop_timer.stop()
+            self._auto_stop_timer = None
+
+        if self.listen_thread:
+            self.listen_thread.stop()
+            self.listen_thread.wait(2000)
+            self.listen_thread = None
+
+        # 无待确认结果时隐藏悬浮预览（已有最终结果则保留，等待用户接受/拒绝/重听）
+        if not getattr(self, '_pending_asr_text', ''):
+            self.asr_preview.hide_panel()
+
+        self.partial_label.setText("等待输入...")
+        self.status_bar.showMessage("录音结束")
 
     def _load_microphones(self):
         """加载麦克风设备列表到下拉框"""
@@ -2222,11 +2388,30 @@ class MedVoiceApp(QMainWindow):
         self.status_bar.showMessage(f"🗣 未找到科室：{name}")
 
     def _on_recognized(self, text):
-        """识别到文本：显示悬浮预览，等待用户确认（委托给 RecordingHandler）"""
+        """识别到文本：显示悬浮预览，等待用户接受/拒绝/重听后再填充"""
         try:
             print(f"[UI] 收到识别结果，长度: {len(text) if text else 0}")
             self.crash_logger.log_event("ASR识别完成", {"text_length": len(text) if text else 0})
-            self.recorder.on_recognized(text)
+
+            if not text:
+                self.partial_label.setText("⚠️ 未识别到文字，请重试")
+                self.status_bar.showMessage("识别完成，但未获取到文字内容")
+                self.asr_preview.hide_panel()
+                return
+
+            # 优先拦截语音命令（如“清除内容”“换模板XX”）——命令立即执行，无需确认
+            if self._handle_voice_command(text):
+                self.partial_label.setText("✓ 已执行语音命令")
+                self.asr_preview.hide_panel()
+                return
+
+            # 显示最终识别预览 + 接受/拒绝/重听确认（确认后才填充编辑器）
+            self._pending_asr_text = text
+            self.asr_preview.show_result(text)
+            self.partial_label.setText("✓ 识别完成，请确认预览结果")
+            self.status_bar.showMessage("识别完成，点击「接受」填入病历，或拒绝 / 重听")
+            self.text_edit.setFocus()
+
         except Exception as e:
             print(f"[UI] 处理识别结果时出错: {e}")
             import traceback
@@ -2289,16 +2474,29 @@ class MedVoiceApp(QMainWindow):
         self._recommend_template(self.text_edit.toPlainText())
 
     def _on_preview_accept(self):
-        """接受预览：把识别结果按病历格式填充到编辑器（委托给 RecordingHandler）"""
-        self.recorder.on_preview_accept()
+        """接受预览：把识别结果按病历格式填充到编辑器"""
+        text = getattr(self, '_pending_asr_text', '') or ''
+        self._pending_asr_text = ''
+        self.asr_preview.hide_panel()
+        if text:
+            self._apply_asr_result(text)
+        else:
+            self.partial_label.setText("等待输入...")
 
     def _on_preview_reject(self):
-        """拒绝预览：丢弃本次识别结果（委托给 RecordingHandler）"""
-        self.recorder.on_preview_reject()
+        """拒绝预览：丢弃本次识别结果"""
+        self._pending_asr_text = ''
+        self.asr_preview.hide_panel()
+        self.partial_label.setText("已拒绝本次识别结果")
+        self.status_bar.showMessage("已丢弃识别结果")
 
     def _on_preview_retry(self):
-        """重听：重新开始录音（委托给 RecordingHandler）"""
-        self.recorder.on_preview_retry()
+        """重听：重新开始录音"""
+        self._pending_asr_text = ''
+        self.asr_preview.hide_panel()
+        if self.is_listening:
+            self._stop_recording()
+        self._toggle_recording()
 
     def _load_last_audio(self):
         """把最近一次录音加载到音文对照播放器"""
@@ -2307,8 +2505,15 @@ class MedVoiceApp(QMainWindow):
             self.audio_player_widget.load(audio_path)
 
     def _on_partial(self, text):
-        """流式识别中间结果（委托给 RecordingHandler）"""
-        self.recorder.on_partial(text)
+        """流式识别中间结果：实时刷新悬浮预览面板，不写入编辑器（避免污染模板结构）"""
+        if not text:
+            return
+        self._stream_has_partial = True
+        # 完整文本多行展示（超长按末尾截取），不再只显示最后 50 字
+        if len(text) > 200:
+            text = "…" + text[-200:]
+        self.partial_label.setText(f"🔊 识别中：{text}")
+        self.asr_preview.show_partial(text)
 
     def _run_correction(self):
         """执行纠错"""
