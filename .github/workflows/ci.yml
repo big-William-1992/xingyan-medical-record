@@ -61,9 +61,10 @@ jobs:
 
       - name: Run lightweight tests only
         run: |
-          # 只运行不依赖大型包（funasr/torch/PyQt5）的测试
-          # test_core.py 是纯逻辑测试，不需要外部依赖
-          pytest tests/test_core.py -v --tb=short || echo "⚠️ Some tests skipped (missing optional deps)"
+          # 设置跳过 ASR 引擎加载（避免触发 1GB 模型下载）
+          export XINGYAN_SKIP_ASR=1
+          # 核心单元测试 + 集成测试
+          pytest tests/test_core.py tests/test_integration.py -v --tb=short || echo "⚠️ Some tests skipped (missing optional deps)"
 
   # ─── 文档检查 ───
   docs:
@@ -86,11 +87,42 @@ jobs:
           test -f docs/USER_MANUAL.md && echo "✅ docs/USER_MANUAL.md" || echo "❌ docs/USER_MANUAL.md"
           echo "✓ 文档检查完成"
 
+  # ─── 安全扫描（bandit，输出到 stdout 避免文件上传问题）───
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: lint
+    continue-on-error: true  # 安全扫描发现的问题不阻塞流程，仅报告
+    defaults:
+      run:
+        working-directory: ./星衍病历智能录入系统
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install bandit
+        run: pip install bandit
+
+      - name: Run bandit (security linter)
+        run: |
+          # 只检查项目代码，跳过 venv/build/dist/.git
+          # 输出到 stdout（不用文件上传，避免路径问题）
+          bandit -r . \
+            --exclude ./venv,./build,./dist,./.git,./__pycache__,./frontend,./templates,./kg_data,./finetune_data,./recordings,./logs,./data \
+            -f txt \
+            --skip B101,B311,B403,B404,B603,B607 || true
+          echo "✅ Bandit scan completed"
+
   # ─── 构建测试（可选，允许失败）───
   build:
     name: Build Test
     runs-on: ubuntu-latest
-    needs: [test, docs]
+    needs: [test, security, docs]
     defaults:
       run:
         working-directory: ./星衍病历智能录入系统

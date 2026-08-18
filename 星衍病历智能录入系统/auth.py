@@ -8,14 +8,15 @@ import jwt
 import datetime
 import hashlib
 import secrets
+import os
 from functools import wraps
 from typing import Optional, Dict
 
 
-# JWT 配置
-JWT_SECRET_KEY = "your-secret-key-change-in-production"  # 生产环境必须修改！
+# JWT 配置（生产环境必须通过环境变量注入密钥！）
+JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-insecure-secret-change-me")
 JWT_ALGORITHM = "HS256"
-JWT_EXPIRATION_HOURS = 24
+JWT_EXPIRATION_HOURS = int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
 
 
 class JWTAuth:

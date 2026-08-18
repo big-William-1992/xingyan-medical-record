@@ -75,3 +75,43 @@ class DiagnosisThread(QThread):
         except Exception as e:
             result = {"error": str(e)}
         self.analysis_done.emit(result)
+
+
+def create_listen_thread(asr, on_text_ready=None, on_partial=None, on_status=None):
+    """
+    统一创建语音识别监听线程并连接信号（MedVoiceApp / WebViewApp 共用）
+
+    Args:
+        asr: ASR 引擎实例
+        on_text_ready: 最终识别结果回调（str）
+        on_partial: 流式中间结果回调（str）
+        on_status: 状态变化回调（str）
+
+    Returns:
+        ListenThread 实例（未启动，需调用 .start()）
+    """
+    thread = ListenThread(asr)
+    if on_text_ready:
+        thread.text_ready.connect(on_text_ready)
+    if on_partial:
+        thread.partial_text.connect(on_partial)
+    if on_status:
+        thread.status_changed.connect(on_status)
+    return thread
+
+
+def stop_listen_thread(thread, timeout_ms=3000):
+    """
+    统一停止监听线程（MedVoiceApp / WebViewApp 共用）
+
+    Args:
+        thread: ListenThread 实例或 None
+        timeout_ms: 等待线程结束的超时时间
+    """
+    if thread is None:
+        return
+    try:
+        thread.stop()
+        thread.wait(timeout_ms)
+    except Exception as e:
+        print(f"[Thread] 停止监听线程失败: {e}")

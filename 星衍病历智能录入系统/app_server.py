@@ -18,6 +18,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 import uvicorn
 from cache_manager import get_cache
 
@@ -37,6 +38,9 @@ _db = None
 def get_asr():
     global _asr
     if _asr is None:
+        # 测试/CI 环境跳过 ASR 引擎加载（避免触发 1GB 模型下载）
+        if os.environ.get("XINGYAN_SKIP_ASR") == "1":
+            return None
         from asr_engine import ASREngine
         _asr = ASREngine(model_path=str(BASE_DIR / "model"))
     return _asr
@@ -168,6 +172,26 @@ async def serve_audio_processor():
     """AudioWorklet 处理器文件"""
     return FileResponse(FRONTEND_DIR / "audio-processor.js", media_type="application/javascript")
 
+@app.get("/offline.js")
+async def serve_offline_js():
+    """离线模式前端模块（IndexedDB 存储 + 预加载 + 补录 + 同步）"""
+    return FileResponse(FRONTEND_DIR / "offline.js", media_type="application/javascript")
+
+@app.get("/offline-asr.js")
+async def serve_offline_asr_js():
+    """离线语音识别模块（sherpa-onnx WASM）"""
+    return FileResponse(FRONTEND_DIR / "offline-asr.js", media_type="application/javascript")
+
+@app.get("/service-worker.js")
+async def serve_service_worker():
+    """Service Worker（离线缓存）"""
+    return FileResponse(FRONTEND_DIR / "service-worker.js", media_type="application/javascript")
+
+# sherpa-onnx WASM 离线语音识别资源（引擎 + 模型，约 300MB，用 download_offline_asr.py 下载）
+WASM_DIR = FRONTEND_DIR / "wasm"
+if WASM_DIR.exists():
+    app.mount("/wasm", StaticFiles(directory=str(WASM_DIR)), name="wasm")
+
 # ═══════════════════════════════════════════════════
 # REST API
 # ═══════════════════════════════════════════════════
@@ -181,13 +205,13 @@ async def stats():
     """系统状态统计"""
     asr = get_asr()
     kg = get_kg()
-    hw_count = len(asr._current_hotwords.split()) if asr._current_hotwords else 0
+    hw_count = len(asr._current_hotwords.split()) if asr and asr._current_hotwords else 0
     return {
         "hotwords": hw_count,
         "kg_entities": len(kg.entities),
         "kg_relations": len(kg.relations),
         "drug_inserts": len(kg.drug_inserts),
-        "asr_ready": asr.is_ready(),
+        "asr_ready": bool(asr) and asr.is_ready(),
     }
 
 @app.get("/api/departments")
@@ -375,6 +399,81 @@ async def list_records():
              "department": r.get("department", ""), "updated_at": r.get("updated_at", "")}
             for r in (records or [])[:50]]
 
+# ═══════════════════════════════════════════════════
+# 离线模式 API（预加载 + 同步）
+# ═══════════════════════════════════════════════════
+
+@app.get("/api/offline/package")
+async def offline_package(dept: str = Query("内科")):
+    """预加载离线数据包（查房前调用，手机断网也能用）"""
+    te = get_template_engine()
+    templates = te.get_templates(dept)
+    template_list = [{"name": t["name"], "content": t["content"]} for t in templates]
+
+    # 字段常用词
+    field_words = {}
+    try:
+        with open(BASE_DIR / "field_words.json", 'r', encoding='utf-8') as f:
+            field_words = json.load(f)
+    except Exception:
+        pass
+
+    # 常用句
+    presets = {}
+    try:
+        with open(BASE_DIR / "field_presets.json", 'r', encoding='utf-8') as f:
+            presets = json.load(f)
+    except Exception:
+        pass
+
+    # 患者列表（最近50条）
+    db = get_db()
+    records = db.list_records(user_id=1) or []
+    patients = [{"id": r["id"], "patient_name": r.get("patient_name", ""),
+                 "department": r.get("department", ""), "updated_at": r.get("updated_at", ""),
+                 "content": r.get("content", "")}
+                for r in records[:50]]
+
+    return {
+        "ok": True,
+        "timestamp": int(time.time()),
+        "department": dept,
+        "templates": template_list,
+        "field_words": field_words,
+        "presets": presets,
+        "patients": patients,
+    }
+
+@app.post("/api/offline/sync")
+async def offline_sync(body: dict = Body(...)):
+    """同步离线记录（手机恢复网络后批量上传）"""
+    records = body.get("records", [])
+    if not records or not isinstance(records, list):
+        return {"ok": False, "msg": "无同步数据"}
+
+    db = get_db()
+    synced = []
+    failed = []
+
+    for item in records:
+        try:
+            content = (item.get("content") or "").strip()
+            if not content:
+                continue
+
+            import re
+            m = re.search(r'姓名[：:]\s*([^\s\n]{1,10})', content)
+            patient_name = m.group(1).strip() if m else ""
+            dept = item.get("department", "")
+            local_id = item.get("local_id", "")
+
+            record_id = db.create_record(1, patient_name, dept, "", content, "草稿")
+            synced.append({"local_id": local_id, "server_id": record_id, "ok": True})
+        except Exception as e:
+            failed.append({"local_id": item.get("local_id", ""), "error": str(e)})
+
+    return {"ok": True, "synced": synced, "failed": failed}
+
 @app.get("/api/records/{record_id}/export/{format}")
 async def export_record(record_id: str, format: str):
     """导出病历为HL7/FHIR格式"""
@@ -513,6 +612,10 @@ async def ws_asr(websocket: WebSocket):
     """
     await websocket.accept()
     asr = get_asr()
+    if asr is None:
+        await websocket.send_json({"type": "error", "msg": "ASR 引擎未启用（XINGYAN_SKIP_ASR=1）"})
+        await websocket.close()
+        return
     audio_buffer = bytearray()
     last_partial_len = 0
     # 每 2 秒音频做一次中间识别 (16000Hz * 2bytes * 2s = 64000 bytes)

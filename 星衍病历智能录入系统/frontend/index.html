@@ -427,6 +427,8 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
   </div>
 </div>
 
+<script src="/offline.js"></script>
+<script src="/offline-asr.js"></script>
 <script>
 // ═══════════════════════════════════════════════════════════
 // 星衍AI 前端 — 完整交互逻辑
@@ -652,14 +654,6 @@ async function loadContextPanel(){
     if(addBtn)addBtn.onclick=async()=>{const s=prompt('输入常用句：');if(s&&s.trim()){try{await fetch(API+'/api/presets/'+encodeURIComponent(currentField),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sentence:s.trim()})});toast('✅ 已添加');loadContextPanel()}catch(e){toast('添加失败：'+e.message)}}};
   }catch(e){console.error('[ContextPanel]',e)}
 }
-async function saveRecord(){
-  const content=$('#editor').innerText.trim();
-  if(!content){toast('没有内容可保存');return}
-  try{
-    const r=await fetch(API+'/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content,department:currentDept,id:recordId})});
-    const d=await r.json();if(d.ok){recordId=d.id;toast('💾 已保存')}else{toast('保存失败')}
-  }catch(e){toast('保存失败：'+e.message)}
-}
 async function sendQA(){
   const input=$('#qaInput');
   const q=input.value.trim();
@@ -775,6 +769,174 @@ function highlightField(name){$$('.editor .fl').forEach(fl=>{fl.classList.toggle
 
 // ─── Toast ───
 function toast(msg){const el=document.createElement('div');el.className='toast';el.textContent=msg;document.body.appendChild(el);setTimeout(()=>el.remove(),3000)}
+
+// ═══════════════════════════════════════════════════════════
+// 离线模式：预加载 + 补录 + 自动同步
+// ═══════════════════════════════════════════════════════════
+
+// ─── Service Worker 注册（页面资源离线缓存）───
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/service-worker.js')
+      .then(()=>console.log('[Offline] Service Worker 已注册'))
+      .catch(e=>console.warn('[Offline] SW 注册失败:',e));
+  });
+}
+
+// ─── 网络状态监听 + 自动同步 ───
+window.addEventListener('online',async ()=>{
+  console.log('[Offline] 网络已恢复');
+  updateOfflineIndicator();
+  // 自动同步离线记录
+  if(window.XingyanOffline){
+    const result = await window.XingyanOffline.syncOfflineRecords();
+    if(result.synced>0) toast(`📤 已同步 ${result.synced} 条离线记录`);
+    if(result.failed>0) toast(`⚠️ ${result.failed} 条同步失败，将自动重试`);
+  }
+});
+
+window.addEventListener('offline',()=>{
+  console.log('[Offline] 网络已断开，进入离线模式');
+  updateOfflineIndicator();
+  toast('📴 离线模式：可正常录入，恢复网络后自动同步');
+});
+
+// ─── 离线状态指示器 ───
+function updateOfflineIndicator(){
+  let badge = $('#offlineBadge');
+  if(!badge){
+    badge = document.createElement('div');
+    badge.id = 'offlineBadge';
+    badge.style.cssText = `position:fixed;top:12px;left:50%;transform:translateX(-50%);
+      z-index:999;padding:6px 16px;border-radius:20px;font-size:12px;font-weight:700;
+      display:none;box-shadow:0 4px 16px rgba(0,0,0,.3);`;
+    document.body.appendChild(badge);
+  }
+  if(navigator.onLine){
+    badge.style.display = 'none';
+  }else{
+    badge.style.display = 'block';
+    badge.textContent = '📴 离线模式';
+    badge.style.background = 'rgba(244,63,94,.9)';
+    badge.style.color = '#fff';
+  }
+}
+
+// ─── 预加载查房数据包（工具栏按钮）───
+async function preloadOfflineData(){
+  const dept = currentDept || '内科';
+  toast(`⏳ 正在预加载 ${dept} 数据包...`);
+  try{
+    if(!window.XingyanOffline) throw new Error('离线模块未加载');
+    const result = await window.XingyanOffline.preloadPackage(dept);
+    if(result.ok){
+      toast(`✅ 预加载完成：${result.templates} 个模板，${result.patients} 位患者`);
+    }else{
+      toast('❌ 预加载失败：' + (result.error || '未知错误'));
+    }
+  }catch(e){
+    toast('❌ 预加载失败：' + e.message);
+  }
+}
+
+// ─── 保存时：在线直接保存，离线存入本地 ───
+async function saveRecord(){
+  const content = $('#editor').innerText.trim();
+  if(!content){ toast('没有内容可保存'); return; }
+  
+  // 离线模式：存入本地，标记待同步
+  if(!navigator.onLine || !window.XingyanOffline){
+    if(window.XingyanOffline){
+      await window.XingyanOffline.addOfflineRecord({ content, department: currentDept });
+      toast('📴 已保存到本地（离线），恢复网络后自动同步');
+      return;
+    }
+  }
+  
+  try{
+    const r = await fetch(API+'/api/records',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({content,department:currentDept,id:recordId})});
+    const d = await r.json();
+    if(d.ok){ recordId = d.id; toast('💾 已保存'); }
+    else{ toast('保存失败'); }
+  }catch(e){
+    // 网络异常时自动降级为离线保存
+    if(window.XingyanOffline){
+      await window.XingyanOffline.addOfflineRecord({ content, department: currentDept });
+      toast('📴 网络异常，已保存到本地（离线）');
+    }else{
+      toast('保存失败：'+e.message);
+    }
+  }
+}
+
+// ─── 工具栏添加"预加载"按钮 ───
+function addOfflineToolbarButton(){
+  const btn = document.createElement('button');
+  btn.className = 'act';
+  btn.textContent = '📥 预加载';
+  btn.title = '预加载查房数据（模板/患者），断网也能用';
+  btn.onclick = preloadOfflineData;
+  const spacer = $('#btnSave');
+  if(spacer && spacer.parentElement){
+    spacer.parentElement.insertBefore(btn, spacer);
+  }
+}
+
+// 初始化离线功能
+(function initOffline(){
+  // 工具栏按钮
+  addOfflineToolbarButton();
+  // 状态指示
+  updateOfflineIndicator();
+  // 启动时检查是否有待同步数据
+  setTimeout(async()=>{
+    if(window.XingyanOffline && navigator.onLine){
+      const stats = await window.XingyanOffline.getOfflineStats();
+      if(stats.pendingCount>0){
+        toast(`📤 发现 ${stats.pendingCount} 条离线记录，正在同步...`);
+        const result = await window.XingyanOffline.syncOfflineRecords();
+        if(result.synced>0) toast(`✅ 已同步 ${result.synced} 条`);
+      }
+    }
+    // 预下载离线语音识别模型（有网时提前加载，断网可用）
+    if(window.XingyanOfflineASR && navigator.onLine){
+      setTimeout(async ()=>{
+        const ok = await window.XingyanOfflineASR.loadOfflineModel();
+        if(ok) console.log('[Offline] 离线语音识别模型已预加载');
+      }, 5000); // 页面加载5秒后后台预加载
+    }
+  }, 3000);
+})();
+
+// ─── 离线模式录音（断网时使用本地 sherpa-onnx 识别）───
+async function startOfflineRecording(){
+  try{
+    const rec = await window.XingyanOfflineASR.recordOfflineAudio(30);
+    $('#dictBar').classList.add('recording');
+    $('#recBtn').classList.remove('idle');
+    $('#recBtn').classList.add('active');
+    $('#dictLabel').textContent='📴 离线识别中 · 请说话...';
+
+    // 30秒后自动停止并识别
+    setTimeout(async ()=>{
+      $('#dictBar').classList.remove('recording');
+      $('#recBtn').classList.remove('active');
+      $('#recBtn').classList.add('idle');
+      $('#dictLabel').textContent='离线识别中...';
+      
+      const result = await window.XingyanOfflineASR.recognizeOffline(rec.samples, rec.sampleRate);
+      if(result.ok && result.text){
+        insertText(result.text + '\n');
+        toast(`📴 离线识别: ${result.text.slice(0, 20)}...`);
+      }else{
+        toast('❌ 离线识别失败：' + (result.error || '未识别到语音'));
+      }
+      $('#dictLabel').textContent='按 F5 开始语音录入';
+    }, 30000);
+  }catch(e){
+    toast('❌ 离线录音失败：' + e.message);
+  }
+}
 </script>
 </body>
 </html>

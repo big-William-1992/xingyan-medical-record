@@ -9,7 +9,8 @@ import json
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QLineEdit, QTableWidget, QTableWidgetItem, QHeaderView,
-    QMessageBox, QTabWidget, QWidget, QFileDialog, QTextEdit
+    QMessageBox, QTabWidget, QWidget, QFileDialog, QTextEdit,
+    QGroupBox, QComboBox, QInputDialog
 )
 from PyQt5.QtCore import Qt
 

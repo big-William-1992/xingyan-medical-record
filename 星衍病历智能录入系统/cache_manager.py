@@ -160,11 +160,11 @@ def get_cache(use_redis: bool = False) -> MemoryCache:
 
 
 def cache_key(*args, **kwargs) -> str:
-    """生成缓存键"""
+    """生成缓存键（sha256，非安全场景，用于键值去重）"""
     key_parts = [str(arg) for arg in args]
     key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
     key_str = "|".join(key_parts)
-    return hashlib.md5(key_str.encode()).hexdigest()
+    return hashlib.sha256(key_str.encode()).hexdigest()
 
 
 def cached(ttl: int = 3600):
