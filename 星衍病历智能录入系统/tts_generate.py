@@ -221,7 +221,7 @@ async def synthesize(sentences, output_dir):
                 if os.path.exists(wav_path) and os.path.getsize(wav_path) > 1000:
                     return utt_id, wav_path, text
             except Exception as e:
-                pass
+                print(f"[TTS] 合成失败 ({utt_id}): {e}")
             return None
     
     log(f"开始合成 {len(sentences)} 条语音...")
@@ -246,8 +246,8 @@ async def synthesize(sentences, output_dir):
                 if t.done() and not t.cancelled():
                     try:
                         results.append(t.result())
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[TTS] 任务结果异常: {e}")
         for r in results:
             if r:
                 wav_scp.append(f"{r[0]} {r[1]}")

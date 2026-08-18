@@ -69,8 +69,9 @@ def _score_record(record, now):
 
 
 class TopKEngine:
-    def __init__(self, memory=None):
+    def __init__(self, memory=None, memory_limit=5000):
         self.memory = memory or get_memory()
+        self.memory_limit = memory_limit
 
     def get_top_terms(self, dept=None, doctor_id=None, limit=80, time_decay=True):
         now = datetime.utcnow()
@@ -79,7 +80,7 @@ class TopKEngine:
             doctor_id=doctor_id,
             dept=dept,
             status="accepted",
-            limit=5000,
+            limit=self.memory_limit,
         ):
             scored = _score_record(record, now) if time_decay else _score_record(record, None)
             if not scored:
@@ -96,7 +97,7 @@ class TopKEngine:
             dept=dept,
             field=field,
             status="accepted",
-            limit=5000,
+            limit=self.memory_limit,
         ):
             scored = _score_record(record, now) if time_decay else _score_record(record, None)
             if not scored:
@@ -109,7 +110,7 @@ class TopKEngine:
         top_terms = [term for term, _ in self.get_top_terms(dept=dept, doctor_id=doctor_id, limit=top_k, time_decay=True)]
         recent_pairs = []
         seen = set()
-        for record in self.memory.get_memories(dept=dept, doctor_id=doctor_id, status="accepted", limit=5000):
+        for record in self.memory.get_memories(dept=dept, doctor_id=doctor_id, status="accepted", limit=self.memory_limit):
             original = (record.get("original") or "").strip()
             corrected = (record.get("corrected") or "").strip()
             if not original or not corrected or original == corrected:
@@ -147,7 +148,7 @@ class TopKEngine:
                 break
         recent_pairs = []
         seen = set()
-        for record in self.memory.get_memories(dept=dept, doctor_id=doctor_id, field=field, status="accepted", limit=5000):
+        for record in self.memory.get_memories(dept=dept, doctor_id=doctor_id, field=field, status="accepted", limit=self.memory_limit):
             original = (record.get("original") or "").strip()
             corrected = (record.get("corrected") or "").strip()
             if not original or not corrected or original == corrected:
@@ -178,7 +179,7 @@ class TopKEngine:
     def get_postprocess_hotword_lines(self, dept=None, doctor_id=None, min_confidence=0.7, limit=200):
         seen = set()
         result = []
-        for record in self.memory.get_memories(dept=dept, doctor_id=doctor_id, status="accepted", limit=5000):
+        for record in self.memory.get_memories(dept=dept, doctor_id=doctor_id, status="accepted", limit=self.memory_limit):
             confidence = float(record.get("confidence", 0.0) or 0.0)
             if confidence < min_confidence:
                 continue

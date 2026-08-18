@@ -37,15 +37,15 @@ class CrashLogger:
         try:
             from PyQt5.QtCore import qInstallMessageHandler
             qInstallMessageHandler(self._qt_message_handler)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrashLogger] Qt 消息处理安装失败: {e}")
 
     def _ensure_log_dir(self):
         if not os.path.exists(LOG_DIR):
             try:
                 os.makedirs(LOG_DIR)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[CrashLogger] 创建日志目录失败: {e}")
 
     def _open_log_file(self):
         try:
@@ -57,8 +57,8 @@ class CrashLogger:
                     if os.path.exists(backup):
                         os.remove(backup)
                     os.rename(log_path, backup)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[CrashLogger] 日志轮转失败: {e}")
             self._log_file = open(log_path, 'a', encoding='utf-8')
         except Exception:
             self._log_file = None
@@ -79,8 +79,8 @@ class CrashLogger:
                     f"程序遇到未预期的错误：\n{msg}\n\n"
                     f"详细日志已保存到：\n{os.path.join(LOG_DIR, 'crash.log')}"
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrashLogger] 错误对话框显示失败: {e}")
 
     def _qt_message_handler(self, msg_type, context, message):
         """Qt 消息处理器"""
@@ -90,8 +90,8 @@ class CrashLogger:
             from PyQt5.QtCore import QtMsgType
             if msg_type in (QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg):
                 print(f"[Qt {context.category}] {message}", file=sys.stderr)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrashLogger] Qt 消息输出失败: {e}")
 
     def log(self, source, message):
         """记录普通日志"""
@@ -101,8 +101,8 @@ class CrashLogger:
             timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._log_file.write(f"[{timestamp}] [{source}] {message}\n")
             self._log_file.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrashLogger] 日志写入失败: {e}")
 
     def log_exception(self, exc_type, exc_value, exc_tb, context="异常"):
         """记录异常详情"""
@@ -116,8 +116,8 @@ class CrashLogger:
             self._log_file.write(f"{tb_str}\n")
             self._log_file.write(f"{'='*60}\n\n")
             self._log_file.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrashLogger] 异常日志写入失败: {e}")
 
     def log_event(self, event_name, data=None):
         """记录业务事件（如录音开始、识别完成等）"""
@@ -130,8 +130,8 @@ class CrashLogger:
                 data_str = f" | {json.dumps(data, ensure_ascii=False)}"
             self._log_file.write(f"[{timestamp}] [EVENT] {event_name}{data_str}\n")
             self._log_file.flush()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[CrashLogger] 事件日志写入失败: {e}")
 
     def get_log_path(self):
         """获取日志文件路径"""

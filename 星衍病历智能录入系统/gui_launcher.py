@@ -80,13 +80,13 @@ def start_server(port):
     server.run()
 
 
-def wait_for_server(port, timeout=15):
+def wait_for_server(host, port, timeout=15):
     """等待服务器就绪"""
     start = time.time()
     while time.time() - start < timeout:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((HOST, port))
+                s.connect((host, port))
                 return True
         except (ConnectionRefusedError, OSError):
             time.sleep(0.2)

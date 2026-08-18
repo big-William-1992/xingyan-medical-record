@@ -5,17 +5,30 @@ Layer 2: NLP 相似度匹配 + 实体归一化
 Layer 3: 规则引擎 + 科室校验
 """
 import json
+import logging
 import os
 import re
+import tempfile
 from difflib import SequenceMatcher, get_close_matches
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from knowledge_graph import MedicalKnowledgeGraph
 from rule_engine import RuleEngine
 from functools import lru_cache
 
+# 纠错阈值（可调）
+CORRECTION_SIMILARITY_THRESHOLD = 0.65  # 知识图谱实体相似度最低要求
+CORRECTION_CONFIDENCE_THRESHOLD = 0.75  # 高置信度自动应用阈值
+MAX_CORRECTION_CANDIDATES = 200         # 相似度匹配最大候选数
+AUTO_CORRECTION_THRESHOLD = 0.80        # 标记为"自动"的相似度阈值
+WORDLIST_MATCH_CUTOFF = 0.70           # 词库匹配最低相似度
+MIN_CORRECTION_SCORE = 0.60            # 候选匹配最低分
+
 
 class Corrector:
-    def __init__(self, dict_path=None, rule_engine=None):
+    def __init__(self, dict_path: str | None = None, rule_engine: Any = None) -> None:
         self.dict_path = dict_path or os.path.join(
             os.path.dirname(__file__), "medical_dict.json"
         )
@@ -98,7 +111,7 @@ class Corrector:
         self.rejections = {}  # (原文, 修正) → True
         self._load_rejections()
 
-    def _load_rejections(self):
+    def _load_rejections(self) -> None:
         """加载用户拒绝过的纠错"""
         if not os.path.exists(self.rejection_path):
             return
@@ -109,27 +122,31 @@ class Corrector:
                 parts = key.split("\x00")
                 if len(parts) == 2:
                     self.rejections[tuple(parts)] = True
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[Corrector] 加载 rejection 失败 ({self.rejection_path}): {e}")
 
-    def save_rejection(self, original, corrected):
-        """记录用户拒绝的纠错对"""
+    def save_rejection(self, original: str, corrected: str) -> None:
+        """记录用户拒绝的纠错对（原子写：临时文件 + os.replace）"""
         key = (original, corrected)
         self.rejections[key] = True
         try:
             serializable = [
                 "\x00".join(k) for k in self.rejections.keys()
             ]
-            with open(self.rejection_path, 'w', encoding='utf-8') as f:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(self.rejection_path), suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(serializable, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, self.rejection_path)
         except Exception as e:
-            print(f"[Corrector] 拒绝规则保存失败: {e}")
+            logger.error(f"[Corrector] 拒绝规则保存失败: {e}")
 
-    def is_rejected(self, original, corrected):
+    def is_rejected(self, original: str, corrected: str) -> bool:
         """检查某条纠错是否被用户拒绝过"""
         return (original, corrected) in self.rejections
 
-    def load_dict(self):
+    def load_dict(self) -> None:
         """加载词库"""
         if not os.path.exists(self.dict_path):
             return
@@ -152,7 +169,7 @@ class Corrector:
         except Exception as e:
             print(f"[Corrector] 词库加载失败: {e}")
 
-    def set_department(self, dept):
+    def set_department(self, dept: str) -> None:
         """切换科室词库"""
         self.current_dept = dept
         self.active_words = set()
@@ -184,7 +201,7 @@ class Corrector:
         # 同时从 medical_dict.json 加载通用词 + 当前科室词
         self._load_dict_words()
 
-    def _load_dict_words(self):
+    def _load_dict_words(self) -> None:
         """从 medical_dict.json 加载科室词库"""
         if not os.path.exists(self.dict_path):
             return
@@ -206,7 +223,7 @@ class Corrector:
         except Exception as e:
             print(f"[Corrector] 词库加载失败: {e}")
 
-    def correct(self, text):
+    def correct(self, text: str) -> tuple[str, list[dict]]:
         """完整纠错流程"""
         log = []
         result = text
@@ -340,7 +357,7 @@ class Corrector:
             if seg in self.kg.entities:
                 continue
             # 在知识图谱中找相似的实体
-            similar = self.kg.find_similar_entities(seg, threshold=0.65)
+            similar = self.kg.find_similar_entities(seg, threshold=CORRECTION_SIMILARITY_THRESHOLD)
             if similar:
                 best_match, score = similar[0]
                 suggestions.append({
@@ -356,7 +373,7 @@ class Corrector:
                 score = float(sug["相似度"].replace('%', '')) / 100
             except (ValueError, TypeError):
                 score = 0.0
-            if score >= 0.75:
+            if score >= CORRECTION_CONFIDENCE_THRESHOLD:
                 result = result.replace(sug["原文"], sug["修正"])
                 log.append({
                     "type": "知识图谱纠错",
@@ -416,23 +433,23 @@ class Corrector:
             seg_chars = set(seg)
             candidates = [e for e in candidates if seg_chars & set(e)]
             # 限制候选数（避免极端情况）
-            if len(candidates) > 200:
-                candidates = candidates[:200]
+            if len(candidates) > MAX_CORRECTION_CANDIDATES:
+                candidates = candidates[:MAX_CORRECTION_CANDIDATES]
 
             for entity_name in candidates:
                 score = SequenceMatcher(None, seg, entity_name).ratio()
-                if score > best_score and score >= 0.6:
+                if score > best_score and score >= MIN_CORRECTION_SCORE:
                     best_score = score
                     best_match = entity_name
 
             # 方法2: 与通用词库做相似度匹配
             if not best_match:
-                matches = get_close_matches(seg, self.active_words, n=1, cutoff=0.7)
+                matches = get_close_matches(seg, self.active_words, n=1, cutoff=WORDLIST_MATCH_CUTOFF)
                 if matches:
                     best_match = matches[0]
                     best_score = SequenceMatcher(None, seg, best_match).ratio()
 
-            if best_match and best_score >= 0.65:
+            if best_match and best_score >= CORRECTION_SIMILARITY_THRESHOLD:
                 corrections[seg] = {
                     "correct": best_match,
                     "score": best_score
@@ -441,7 +458,7 @@ class Corrector:
         # 应用纠错
         for wrong, info in corrections.items():
             result = result.replace(wrong, info["correct"])
-            confidence = "自动" if info["score"] >= 0.8 else "建议"
+            confidence = "自动" if info["score"] >= AUTO_CORRECTION_THRESHOLD else "建议"
             log.append({
                 "type": "NLP纠错",
                 "原文": wrong,
@@ -450,10 +467,10 @@ class Corrector:
                 "相似度": f"{info['score']:.0%}"
             })
 
-        # 拼音纠错
+        # 拼音纠错（不区分大小写替换）
         for pinyin, correct in self.pinyin_corrections.items():
-            if pinyin in result.lower():
-                result = result.replace(pinyin, correct)
+            if pinyin.lower() in result.lower():
+                result = re.sub(re.escape(pinyin), correct, result, flags=re.IGNORECASE)
                 log.append({
                     "type": "拼音纠错",
                     "原文": pinyin,
@@ -504,18 +521,18 @@ class Corrector:
 
         return log
 
-    def get_suggestions(self, word):
+    def get_suggestions(self, word: str) -> list[str]:
         """获取纠错建议"""
         if word in self.active_words or word in self.kg.entities:
             return []
         matches = get_close_matches(word, list(self.active_words | set(self.kg.entities.keys())), n=3, cutoff=0.5)
         return matches
 
-    def get_entity_info(self, word):
+    def get_entity_info(self, word: str) -> dict | None:
         """获取实体在知识图谱中的信息"""
         return self.kg.entities.get(word)
 
-    def get_graph_stats(self):
+    def get_graph_stats(self) -> dict:
         """获取知识图谱统计信息"""
         types = {}
         for name, info in self.kg.entities.items():
@@ -527,12 +544,12 @@ class Corrector:
             "实体类型分布": types
         }
 
-    def post_process_medical(self, text):
+    def post_process_medical(self, text: str) -> str:
         """医学术语后处理（委托给模块级函数，统一管理纠错表）"""
         return post_process_medical(text, self.term_corrections)
 
 
-def post_process_medical(text, term_corrections=None):
+def post_process_medical(text: str, term_corrections: dict | None = None) -> str:
     """医学术语后处理（独立函数，供 ASR 引擎调用）"""
     if not text:
         return text

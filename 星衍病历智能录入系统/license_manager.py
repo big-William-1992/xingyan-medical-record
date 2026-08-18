@@ -14,24 +14,36 @@ import json
 import os
 import platform
 import subprocess
-import struct
 import time
+import fcntl
 import uuid
 from datetime import datetime, timedelta
 
 try:
     from cryptography.fernet import Fernet
-    HAS_CRYPTO = True
 except ImportError:
-    HAS_CRYPTO = False
+    raise ImportError("cryptography 包是必须的，请运行: pip install cryptography")
 
 # ─── 常量 ────────────────────────────────────────────
-# 授权密钥（32 位 hex → 用于 HMAC 签名 + Fernet 派生）
-_LICENSE_SECRET = "x7y9a2e4f6b8c0d1e3f5a7b9c2d4e6f8"
+# 授权密钥最小长度
+LICENSE_SECRET_MIN_LEN = 32
+# 授权密钥：必须通过环境变量注入，缺失则禁用激活功能
+_LICENSE_SECRET = os.environ.get("XINGYAN_LICENSE_SECRET")
+if not _LICENSE_SECRET:
+    raise RuntimeError("XINGYAN_LICENSE_SECRET 环境变量未设置，激活功能不可用")
+if len(_LICENSE_SECRET) < LICENSE_SECRET_MIN_LEN:
+    raise RuntimeError(f"XINGYAN_LICENSE_SECRET 至少需要 {LICENSE_SECRET_MIN_LEN} 字符")
 # 试用期天数
 TRIAL_DAYS = 90
-# 授权文件名
-_LICENSE_FILE = "license.dat"
+# 时钟回拨检测阈值（秒）；超过此值视为异常
+CLOCK_ROLLBACK_THRESHOLD_SECONDS = 3600
+# 授权文件存放路径（用户配置目录，非程序目录）
+def _get_license_path() -> str:
+    base = os.environ.get("XDG_DATA_HOME", os.path.join(os.path.expanduser("~"), ".local", "share"))
+    lic_dir = os.path.join(base, "xingyan")
+    os.makedirs(lic_dir, exist_ok=True)
+    return os.path.join(lic_dir, "license.dat")
+_LICENSE_FILE = None  # 延迟初始化（需要时调用 _get_license_path()）
 
 
 class LicenseManager:
@@ -39,54 +51,124 @@ class LicenseManager:
 
     def __init__(self, base_dir=None):
         self._base_dir = base_dir or os.path.dirname(os.path.abspath(__file__))
-        self._license_path = os.path.join(self._base_dir, _LICENSE_FILE)
+        if _LICENSE_FILE is None:
+            self._license_path = _get_license_path()
+        else:
+            self._license_path = os.path.join(self._base_dir, _LICENSE_FILE)
         self._fernet = self._derive_fernet()
-        self._license_data = None  # 缓存已加载的授权信息
+        self._license_data = None
 
     # ─── 机器指纹 ─────────────────────────────────────
 
     @staticmethod
     def get_machine_id() -> str:
         """
-        采集机器指纹（跨平台）。
-        Windows：MAC + 计算机名 + 主磁盘序列号
-        macOS/Linux：MAC + 计算机名
+        采集机器指纹（跨平台，多硬件因子）。
+        Windows：MAC + CPU 序列号 + 主磁盘序列号 + 计算机名
+        macOS：MAC + 磁盘 UUID + 计算机名
+        Linux：MAC + CPU 序列号 + 磁盘 UUID + 主机名
         返回 16 位十六进制字符串。
         """
         parts = []
 
         # 1. MAC 地址
         mac = uuid.getnode()
-        parts.append(f"{mac:012x}")
+        if mac and mac != 0 and mac != (2**48 - 1):
+            parts.append(f"mac:{mac:012x}")
 
-        # 2. 计算机名
-        parts.append(platform.node().strip().lower())
+        # 2. CPU 序列号/标识符
+        cpu_id = LicenseManager._get_cpu_id()
+        if cpu_id:
+            parts.append(f"cpu:{cpu_id}")
 
-        # 3. 磁盘序列号（仅 Windows）
-        if platform.system() == "Windows":
-            serial = LicenseManager._get_windows_disk_serial()
-            if serial:
-                parts.append(serial)
+        # 3. 磁盘序列号 / UUID
+        disk_id = LicenseManager._get_disk_id()
+        if disk_id:
+            parts.append(f"disk:{disk_id}")
+
+        # 4. 计算机名
+        hostname = platform.node().strip().lower()
+        if hostname:
+            parts.append(f"host:{hostname}")
 
         raw = "|".join(parts)
         h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return h[:16].upper()
 
     @staticmethod
-    def _get_windows_disk_serial() -> str:
-        """获取 Windows 主磁盘序列号"""
+    def _get_cpu_id() -> str:
+        """获取 CPU 标识符"""
         try:
-            result = subprocess.run(
-                ["wmic", "diskdrive", "get", "serialnumber", "/format:list"],
-                capture_output=True, text=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-            )
-            for line in result.stdout.strip().split("\n"):
-                line = line.strip()
-                if line.startswith("SerialNumber="):
-                    serial = line.split("=", 1)[1].strip()
-                    if serial:
-                        return serial
+            system = platform.system()
+            if system == "Windows":
+                result = subprocess.run(
+                    ["wmic", "cpu", "get", "ProcessorId", "/format:list"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                )
+                for line in result.stdout.strip().split("\n"):
+                    line = line.strip()
+                    if line.startswith("ProcessorId="):
+                        return line.split("=", 1)[1].strip()
+            elif system == "Darwin":  # macOS
+                result = subprocess.run(
+                    ["sysctl", "-n", "machdep.cpu.brand_string"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                brand = result.stdout.strip()
+                if brand:
+                    return hashlib.md5(brand.encode()).hexdigest()[:16]
+            elif system == "Linux":
+                for path in ["/proc/cpuinfo", "/sys/devices/virtual/dmi/id/product_uuid"]:
+                    if os.path.exists(path):
+                        with open(path, "r") as f:
+                            content = f.read()
+                        for line in content.split("\n"):
+                            if "Serial" in line or "Processor" in line or "model name" in line:
+                                val = line.split(":", 1)[1].strip() if ":" in line else ""
+                                if val:
+                                    return hashlib.md5(val.encode()).hexdigest()[:16]
+        except Exception:
+            pass
+        return ""
+
+    @staticmethod
+    def _get_disk_id() -> str:
+        """获取磁盘序列号 / UUID"""
+        try:
+            system = platform.system()
+            if system == "Windows":
+                result = subprocess.run(
+                    ["wmic", "diskdrive", "get", "serialnumber", "/format:list"],
+                    capture_output=True, text=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                )
+                for line in result.stdout.strip().split("\n"):
+                    line = line.strip()
+                    if line.startswith("SerialNumber="):
+                        serial = line.split("=", 1)[1].strip()
+                        if serial:
+                            return serial
+            elif system == "Darwin":  # macOS
+                result = subprocess.run(
+                    ["diskutil", "info", "/", "-plist"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                for line in result.stdout.split("\n"):
+                    if "VolumeUUID" in line or "DiskUUID" in line:
+                        val = line.split("=", 1)[1].strip().strip('"')
+                        if val:
+                            return val
+            elif system == "Linux":
+                result = subprocess.run(
+                    ["lsblk", "-d", "-o", "NAME,SERIAL", "-n"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                first = result.stdout.strip().split("\n")[0]
+                if first:
+                    parts = first.split()
+                    if len(parts) >= 2:
+                        return parts[1].strip()
         except Exception:
             pass
         return ""
@@ -128,41 +210,45 @@ class LicenseManager:
 
     # ─── 授权文件读写 ──────────────────────────────────
 
-    def _derive_fernet(self):
+    def _derive_fernet(self) -> Fernet:
         """从密钥派生 Fernet 实例"""
-        if not HAS_CRYPTO:
-            return None
         import base64
         key = hashlib.sha256(_LICENSE_SECRET.encode()).digest()
         fernet_key = base64.urlsafe_b64encode(key)
         return Fernet(fernet_key)
 
-    def _save_license(self, data: dict):
-        """加密保存授权信息"""
+    def _save_license(self, data: dict) -> None:
+        """加密保存授权信息（Fernet 强加密 + 文件锁）"""
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        if self._fernet:
-            encrypted = self._fernet.encrypt(raw)
-            with open(self._license_path, "wb") as f:
-                f.write(encrypted)
-        else:
-            # fallback: base64 编码（无 cryptography 时）
-            import base64
-            with open(self._license_path, "wb") as f:
-                f.write(base64.b64encode(raw))
+        encrypted = self._fernet.encrypt(raw)
+        lock_path = self._license_path + ".lock"
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                with open(self._license_path, "wb") as f:
+                    f.write(encrypted)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _load_license(self) -> dict | None:
         """读取并解密授权信息"""
         if not os.path.exists(self._license_path):
             return None
+        lock_path = self._license_path + ".lock"
         try:
-            with open(self._license_path, "rb") as f:
-                raw = f.read()
-            if self._fernet:
-                decrypted = self._fernet.decrypt(raw)
-            else:
-                import base64
-                decrypted = base64.b64decode(raw)
-            return json.loads(decrypted.decode("utf-8"))
+            with open(lock_path, "w") as lock_file:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
+                try:
+                    with open(self._license_path, "rb") as f:
+                        raw = f.read()
+                    if self._fernet:
+                        decrypted = self._fernet.decrypt(raw)
+                    else:
+                        import base64
+                        decrypted = base64.b64decode(raw)
+                    return json.loads(decrypted.decode("utf-8"))
+                finally:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         except Exception:
             return None
 
@@ -207,7 +293,7 @@ class LicenseManager:
 
         # ── 防时间回拨 ──
         last_run = data.get("last_run_time", 0)
-        if last_run > now + 3600:
+        if last_run > now + CLOCK_ROLLBACK_THRESHOLD_SECONDS:
             return {
                 "status": "tampered",
                 "machine_id": machine_id,
@@ -238,12 +324,16 @@ class LicenseManager:
         return self._trial_status(machine_id, data)
 
     def _trial_status(self, machine_id: str, data: dict) -> dict:
-        """计算试用期状态"""
+        """计算试用期状态（防时间回拨：以 last_run_time 为下界）"""
         first_run = data.get("first_run_time", time.time())
+        last_run = data.get("last_run_time", first_run)
+        # 取系统时间与上次记录时间的较大值，防止用户回拨时钟延长试用
+        effective_now = max(time.time(), last_run)
         first_run_dt = datetime.fromtimestamp(first_run)
-        # 按日期计算，首日为第 1 天（剩余 90 天）
+        # 试用期按 first_run 起算 90 天
         expiry_date = (first_run_dt + timedelta(days=TRIAL_DAYS)).date()
-        remaining = (expiry_date - datetime.now().date()).days
+        current_date = datetime.fromtimestamp(effective_now).date()
+        remaining = (expiry_date - current_date).days
         first_run_str = first_run_dt.strftime("%Y-%m-%d %H:%M:%S")
 
         if remaining <= 0:
@@ -299,7 +389,7 @@ class LicenseManager:
             "message": "激活成功！软件已永久授权，可继续使用。",
         }
 
-    def reset(self):
+    def reset(self) -> None:
         """删除授权文件（用于测试或重新激活）"""
         if os.path.exists(self._license_path):
             os.remove(self._license_path)

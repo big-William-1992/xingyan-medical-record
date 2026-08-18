@@ -4,6 +4,7 @@
 - UserManagerDialog：管理员可增删用户、重置密码、修改科室/角色
 风格与主程序一致（深色科技风 #0a0e27 / #00d4ff）
 """
+import re
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QComboBox, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
@@ -11,8 +12,39 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt
 
-DEPARTMENTS = ["全科", "内科", "外科", "妇产科", "儿科"]
+DEPARTMENTS = ["全科", "外科", "妇产科", "儿科"]
 ROLES = [("doctor", "医生"), ("admin", "管理员")]
+
+# 输入校验规则
+_USERNAME_RE = re.compile(r'^[a-zA-Z0-9_一-鿿]{3,30}$')  # 3-30 字符，中英文/数字/下划线
+_PASSWORD_MIN_LEN = 8  # 最少 8 字符（医疗系统要求更高安全）
+
+
+def _validate_username(username: str) -> str | None:
+    """校验用户名格式，返回错误信息或 None"""
+    username = username.strip()
+    if not username:
+        return "用户名不能为空"
+    if len(username) < 3:
+        return "用户名至少 3 个字符"
+    if len(username) > 30:
+        return "用户名最多 30 个字符"
+    if not _USERNAME_RE.match(username):
+        return "用户名只能包含中文、英文、数字、下划线"
+    return None
+
+
+def _validate_password(password: str, is_admin: bool = False) -> str | None:
+    """校验密码复杂度，返回错误信息或 None"""
+    if not password:
+        return "密码不能为空"
+    min_len = _PASSWORD_MIN_LEN + 4 if is_admin else _PASSWORD_MIN_LEN
+    if len(password) < _PASSWORD_MIN_LEN:
+        return f"密码至少 {_PASSWORD_MIN_LEN} 个字符"
+    # 至少包含字母或数字中的一种
+    if not any(c.isalpha() or c.isdigit() for c in password):
+        return "密码需包含字母或数字"
+    return None
 
 DIALOG_STYLE = """
     QDialog { background: #0a0e27; }
@@ -126,6 +158,18 @@ class LoginDialog(QDialog):
             QMessageBox.warning(self, "提示", "请输入用户名和密码")
             return
 
+        # 校验用户名格式
+        username_err = _validate_username(username)
+        if username_err:
+            QMessageBox.warning(self, "输入错误", username_err)
+            return
+
+        is_admin = self._first_run
+        pwd_err = _validate_password(password, is_admin=is_admin)
+        if pwd_err:
+            QMessageBox.warning(self, "输入错误", pwd_err)
+            return
+
         if self._first_run:
             dept = self.dept_combo.currentText() if self.dept_combo else "全科"
             uid = self.db.create_user(username, password, dept, "admin")
@@ -137,7 +181,12 @@ class LoginDialog(QDialog):
             self.accept()
             return
 
-        user = self.db.verify_user(username, password)
+        try:
+            user = self.db.verify_user(username, password)
+        except Exception as e:
+            QMessageBox.critical(self, "登录异常", f"验证失败：{e}")
+            self.pwd_input.clear()
+            return
         if user is None:
             QMessageBox.warning(self, "登录失败", "用户名或密码错误")
             self.pwd_input.clear()

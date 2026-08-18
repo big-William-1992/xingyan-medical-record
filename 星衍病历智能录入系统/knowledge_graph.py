@@ -5,10 +5,20 @@
 - 上下文感知纠错
 """
 import json
+import logging
 import os
 import re
+import threading
 from difflib import SequenceMatcher, get_close_matches
 from functools import lru_cache
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# 知识图谱相似度阈值
+KG_SIMILARITY_SAME_TYPE = 0.7  # 同类型实体基础相似度
+KG_SIMILARITY_RELATED = 0.8    # 有直接关系的实体相似度
+KG_TOP_N_SIMILAR = 5           # 返回相似实体最大数量
 
 
 class MedicalKnowledgeGraph:
@@ -18,12 +28,14 @@ class MedicalKnowledgeGraph:
     用于语义级纠错和上下文验证
     """
 
-    def __init__(self, external_dir=None):
+    def __init__(self, external_dir: str | None = None) -> None:
         # 知识图谱数据
         self.entities = {}       # 实体名称 → 实体信息
         self.relations = []      # (实体A, 关系, 实体B)
         self.entity_types = {}   # 实体名称 → 类型
-        self._sim_cache = {}     # 语义相似度缓存
+        self._sim_cache = {}     # 语义相似度缓存（带 LRU 上限）
+        self._sim_cache_max = 10000  # 缓存上限，防止内存无限增长
+        self._sim_lock = threading.Lock()  # 保护 _sim_cache 的线程安全
         self._rel_set = set()    # 关系去重集合
         self._rel_by_subj = {}   # 主体 → [(rel, obj)] 正向索引
         self._rel_by_obj = {}    # 客体 → [(rel, subj)] 反向索引
@@ -634,7 +646,7 @@ class MedicalKnowledgeGraph:
 
     # ─── 外部知识导入（OpenKG / CMeKG 等）─────────────────
 
-    def _add_relation(self, subj, rel, obj):
+    def _add_relation(self, subj: str, rel: str, obj: str) -> None:
         """追加关系并去重（内置 + 外部统一入口）"""
         if not subj or not obj:
             return
@@ -647,21 +659,21 @@ class MedicalKnowledgeGraph:
         self._rel_by_subj.setdefault(subj, []).append((rel, obj))
         self._rel_by_obj.setdefault(obj, []).append((rel, subj))
 
-    def query_by_subj(self, subj, rel=None):
+    def query_by_subj(self, subj: str, rel: str | None = None) -> list:
         """正向查询：给定主体，返回 [(rel, obj)] 或过滤后的 [obj]"""
         pairs = self._rel_by_subj.get(subj, [])
         if rel:
             return [o for r, o in pairs if r == rel]
         return pairs
 
-    def query_by_obj(self, obj, rel=None):
+    def query_by_obj(self, obj: str, rel: str | None = None) -> list:
         """反向查询：给定客体，返回 [(rel, subj)] 或过滤后的 [subj]"""
         pairs = self._rel_by_obj.get(obj, [])
         if rel:
             return [s for r, s in pairs if r == rel]
         return pairs
 
-    def _merge_entity(self, name, info):
+    def _merge_entity(self, name: str, info: dict) -> None:
         """合并一个实体到图谱：新增则登记，已存在则并入列表字段"""
         etype = info.get("type")
         if name not in self.entities:
@@ -681,7 +693,7 @@ class MedicalKnowledgeGraph:
             elif key not in existing or not existing.get(key):
                 existing[key] = val
 
-    def _load_external_kg(self):
+    def _load_external_kg(self) -> int:
         """
         从 self.external_dir 加载 *.json 外部医学知识并合并进图谱。
         统一 schema（详见 kg_data/README）：
@@ -714,7 +726,7 @@ class MedicalKnowledgeGraph:
             loaded += self._merge_kg_payload(data)
         return loaded
 
-    def _merge_kg_payload(self, data):
+    def _merge_kg_payload(self, data: dict) -> int:
         """合并一份已解析的 JSON 知识载荷，返回新增/更新实体数"""
         if not isinstance(data, dict):
             return 0
@@ -764,7 +776,7 @@ class MedicalKnowledgeGraph:
             count += 1
         return count
 
-    def _merge_triples_payload(self, data):
+    def _merge_triples_payload(self, data: dict) -> int:
         """
         合并三元组格式的知识图谱（xywy-KG 等）。
         格式: {"entities": [...], "triples": [{"s": 主体, "p": 关系, "o": 客体}]}
@@ -809,11 +821,11 @@ class MedicalKnowledgeGraph:
         print(f"[KG] 三元组导入: {count} 实体, {len(data.get('triples', []))} 关系")
         return count
 
-    def normalize(self, name):
+    def normalize(self, name: str) -> str:
         """把别名归一化到标准实体名（无别名时原样返回）"""
         return self.aliases.get(name, name)
 
-    def _load_drug_inserts(self):
+    def _load_drug_inserts(self) -> None:
         """加载批量下载的药品说明书（kg_data/drug_inserts.json）"""
         path = os.path.join(self.external_dir, "drug_inserts.json")
         if not os.path.exists(path):
@@ -827,11 +839,11 @@ class MedicalKnowledgeGraph:
                     self.drug_inserts[name] = info
                     count += 1
             if count:
-                print(f"[KG] 药品说明书加载: {count} 种 (总计 {len(self.drug_inserts)})")
+                logger.info(f"[KG] 药品说明书加载: {count} 种 (总计 {len(self.drug_inserts)})")
         except Exception as e:
-            print(f"[KG] 加载药品说明书失败: {e}")
+            logger.error(f"[KG] 加载药品说明书失败: {e}", exc_info=True)
 
-    def _load_legal_kb(self):
+    def _load_legal_kb(self) -> None:
         """加载法律法规知识库（kg_data/legal_kb.json）
 
         schema: {"laws": {"法律名": {"full_name", "aliases", "status", "note",
@@ -866,11 +878,11 @@ class MedicalKnowledgeGraph:
                 info["articles_index"] = index
                 self.laws[name] = info
             if total:
-                print(f"[KG] 法律法规加载: {len(self.laws)} 部, {total} 条")
+                logger.info(f"[KG] 法律法规加载: {len(self.laws)} 部, {total} 条")
         except Exception as e:
-            print(f"[KG] 加载法律法规失败: {e}")
+            logger.error(f"[KG] 加载法律法规失败: {e}", exc_info=True)
 
-    def get_law_article(self, law_key, article_no):
+    def get_law_article(self, law_key: str, article_no: str) -> dict | None:
         """按条号返回某部法律的条文，未指定法律时在全库中查找"""
         keys = [law_key] if law_key in self.laws else list(self.laws.keys())
         for k in keys:
@@ -885,7 +897,7 @@ class MedicalKnowledgeGraph:
                     return art
         return None
 
-    def get_drug_info(self, drug):
+    def get_drug_info(self, drug: str) -> dict | None:
         """返回药物说明书信息（适应症/用法用量/禁忌/不良反应），无则 None"""
         drug = self.normalize(drug)
         # 精确匹配
@@ -900,7 +912,7 @@ class MedicalKnowledgeGraph:
                 return candidates[0][1]
         return None
 
-    def recommend_treatment(self, disease):
+    def recommend_treatment(self, disease: str) -> dict:
         """
         综合治疗方案推荐：整合西医药物 + 检查 + 中医证型 + 饮食宜忌，
         并附带药物说明书（若有）。返回结构化 dict。
@@ -921,7 +933,7 @@ class MedicalKnowledgeGraph:
         }
         return result
 
-    def get_diet_for_disease(self, disease):
+    def get_diet_for_disease(self, disease: str) -> dict | None:
         """返回疾病的饮食宜忌（宜吃/忌吃/推荐食谱）"""
         disease = self.normalize(disease)
         info = self.entities.get(disease, {})
@@ -934,7 +946,7 @@ class MedicalKnowledgeGraph:
             diet["推荐食谱"] = info["推荐食谱"]
         return diet if diet else None
 
-    def get_herb_info(self, herb_name):
+    def get_herb_info(self, herb_name: str) -> dict | None:
         """返回中药材信息（性味/归经/功效/主治）"""
         herb_name = self.normalize(herb_name)
         info = self.entities.get(herb_name, {})
@@ -942,7 +954,7 @@ class MedicalKnowledgeGraph:
             return info
         return None
 
-    def get_formula_info(self, formula_name):
+    def get_formula_info(self, formula_name: str) -> dict | None:
         """返回方剂信息（组成/功效/主治）"""
         formula_name = self.normalize(formula_name)
         info = self.entities.get(formula_name, {})
@@ -950,76 +962,87 @@ class MedicalKnowledgeGraph:
             return info
         return None
 
-    def get_entity_type(self, name):
+    def get_entity_type(self, name: str) -> str | None:
         """获取实体类型"""
         return self.entity_types.get(name)
 
-    def get_related_entities(self, entity_name, relation=None):
-        """获取关联实体"""
+    def get_related_entities(self, entity_name: str, relation: str | None = None) -> list:
+        """获取关联实体（使用索引，O(k) 而非 O(n)）"""
         related = []
-        for subj, rel, obj in self.relations:
-            if subj == entity_name:
-                if relation is None or rel == relation:
-                    related.append((rel, obj))
-            elif obj == entity_name:
-                if relation is None or rel == relation:
-                    related.append((rel, subj))
+        # subj → [(rel, obj)]
+        for rel, obj in self._rel_by_subj.get(entity_name, []):
+            if relation is None or rel == relation:
+                related.append((rel, obj))
+        # obj → [(rel, subj)]
+        for rel, subj in self._rel_by_obj.get(entity_name, []):
+            if relation is None or rel == relation:
+                related.append((rel, subj))
         return related
 
-    def get_diseases_with_symptom(self, symptom):
+    def get_diseases_with_symptom(self, symptom: str) -> list[str]:
         """根据症状查找可能的疾病（保序去重）"""
         results = []
-        for subj, rel, obj in self.relations:
-            disease = None
-            if rel == "HAS_SYMPTOM" and obj == symptom:
+        # 使用 _rel_by_obj 索引：symptom 作为 obj，查找相关的疾病（subj）
+        for rel, subj in self._rel_by_obj.get(symptom, []):
+            if rel == "HAS_SYMPTOM":
                 disease = subj
-            elif rel == "INDICATES" and subj == symptom:
-                disease = obj
+            elif rel == "INDICATES":
+                disease = subj
+            else:
+                continue
             if disease and disease not in results:
                 results.append(disease)
         return results
 
-    def get_drugs_for_disease(self, disease):
+    def get_drugs_for_disease(self, disease: str) -> list[str]:
         """根据疾病查找常用药物（保序去重）"""
         results = []
-        for subj, rel, obj in self.relations:
-            drug = None
-            if rel == "TREATED_BY" and subj == disease:
+        # 使用 _rel_by_subj 索引：disease 作为 subj，查找药物（obj）
+        for rel, obj in self._rel_by_subj.get(disease, []):
+            if rel == "TREATED_BY":
                 drug = obj
-            elif rel == "TREATS" and obj == disease:
+                if drug and drug not in results:
+                    results.append(drug)
+        # 使用 _rel_by_obj 索引：disease 作为 obj，查找药物（subj）
+        for rel, subj in self._rel_by_obj.get(disease, []):
+            if rel == "TREATS":
                 drug = subj
-            if drug and drug not in results:
-                results.append(drug)
+                if drug and drug not in results:
+                    results.append(drug)
         return results
 
-    def get_exams_for_disease(self, disease):
+    def get_exams_for_disease(self, disease: str) -> list[str]:
         """根据疾病查找常见检查"""
         info = self.entities.get(disease, {})
         return list(info.get("常见检查", []))
 
-    def get_symptoms_for_disease(self, disease):
+    def get_symptoms_for_disease(self, disease: str) -> list[str]:
         """根据疾病查找常见症状"""
         info = self.entities.get(disease, {})
         return list(info.get("常见症状", []))
 
-    def get_all_diseases(self):
+    def get_all_diseases(self) -> list[str]:
         """返回全部疾病实体名列表"""
         return [name for name, t in self.entity_types.items() if t == "疾病"]
 
-    def get_critical_value(self, disease):
+    def get_critical_value(self, disease: str) -> str | None:
         """返回疾病的危急值提示（无则 None）"""
         return self.entities.get(disease, {}).get("危急值")
 
-    def semantic_similarity(self, word1, word2):
-        """计算两个词的语义相似度（基于知识图谱距离，带缓存）"""
+    def semantic_similarity(self, word1: str, word2: str) -> float:
+        """计算两个词的语义相似度（基于知识图谱距离，带 LRU 缓存）"""
         if word1 == word2:
             return 1.0
 
         # 缓存键（双向对称）
         key = (word1, word2) if word1 <= word2 else (word2, word1)
-        cached = self._sim_cache.get(key)
-        if cached is not None:
-            return cached
+        with self._sim_lock:
+            cached = self._sim_cache.get(key)
+            if cached is not None:
+                # LRU：重新插入到末尾（Python 3.7+ dict 保持插入顺序）
+                self._sim_cache.pop(key)
+                self._sim_cache[key] = cached
+                return cached
 
         # 直接匹配
         if word1 in self.entities and word2 in self.entities:
@@ -1027,21 +1050,32 @@ class MedicalKnowledgeGraph:
             type2 = self.entity_types[word2]
             # 同类型实体相似度较高
             if type1 == type2:
-                sim = 0.7
-                self._sim_cache[key] = sim
+                sim = KG_SIMILARITY_SAME_TYPE
+                self._sim_cache_set(key, sim)
                 return sim
             # 不同类型但有直接关系
             for s, r, o in self.relations:
                 if (s == word1 and o == word2) or (s == word2 and o == word1):
-                    self._sim_cache[key] = 0.8
-                    return 0.8
+                    self._sim_cache_set(key, KG_SIMILARITY_RELATED)
+                    return KG_SIMILARITY_RELATED
 
         # 字符串相似度作为 fallback
         sim = SequenceMatcher(None, word1, word2).ratio()
-        self._sim_cache[key] = sim
+        self._sim_cache_set(key, sim)
         return sim
 
-    def find_similar_entities(self, word, threshold=0.6):
+    def _sim_cache_set(self, key: tuple, value: float) -> None:
+        """写入相似度缓存（带 LRU 上限）"""
+        with self._sim_lock:
+            if key in self._sim_cache:
+                self._sim_cache.pop(key)
+            elif len(self._sim_cache) >= self._sim_cache_max:
+                # 驱逐最旧的条目（dict 第一个 key）
+                oldest = next(iter(self._sim_cache))
+                del self._sim_cache[oldest]
+            self._sim_cache[key] = value
+
+    def find_similar_entities(self, word: str, threshold: float = 0.6) -> list[tuple[str, float]]:
         """在知识图谱中查找相似实体"""
         results = []
         for entity_name in self.entities:
@@ -1049,11 +1083,11 @@ class MedicalKnowledgeGraph:
             if sim >= threshold:
                 results.append((entity_name, sim))
         results.sort(key=lambda x: x[1], reverse=True)
-        return results[:5]
+        return results[:KG_TOP_N_SIMILAR]
 
     # ─── 中医方法 ───────────────────────────────────────
 
-    def get_syndromes_for_disease(self, tcm_disease):
+    def get_syndromes_for_disease(self, tcm_disease: str) -> list[str]:
         """根据中医病名返回常见证型列表"""
         results = []
         for subj, rel, obj in self.relations:
@@ -1061,7 +1095,7 @@ class MedicalKnowledgeGraph:
                 results.append(obj)
         return results
 
-    def get_treatment_for_syndrome(self, syndrome):
+    def get_treatment_for_syndrome(self, syndrome: str) -> dict:
         """根据证型返回 {治法, 代表方, 组成药物}"""
         result = {"治法": "", "代表方": "", "组成": []}
         for subj, rel, obj in self.relations:
@@ -1076,7 +1110,7 @@ class MedicalKnowledgeGraph:
                             result["组成"].append(o2)
         return result
 
-    def infer_syndrome(self, symptoms, top_n=3):
+    def infer_syndrome(self, symptoms: list[str], top_n: int = 3) -> list[dict]:
         """
         根据症状组合推理证型（加权排序）。
         symptoms: 症状列表

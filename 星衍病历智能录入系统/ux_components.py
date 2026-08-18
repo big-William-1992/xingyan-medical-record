@@ -374,8 +374,8 @@ class OnboardingGuide(QWidget):
         try:
             with open(_GUIDE_FLAG, "w") as f:
                 f.write("done")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[UX] 写入引导标记失败: {e}")
         self.close()
 
     @staticmethod

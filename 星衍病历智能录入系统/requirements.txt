@@ -11,6 +11,8 @@ pyjwt>=2.0.0    # JWT 认证（auth.py）
 
 # ─── GUI 桌面窗口 ───
 pywebview>=4.0
+PyQt5>=5.15.0
+PyQtWebEngine>=5.15.0
 
 # ─── 语音识别 ───
 funasr>=1.0.0
@@ -28,8 +30,14 @@ kenlm>=0.1.0
 # ─── 数据处理 ───
 pydantic>=2.0.0
 
+# ─── 安全 ───
+bcrypt>=4.0.0   # 密码哈希（bcrypt，替代 SHA256）
+
 # ─── 微调语料生成（可选）───
 edge-tts>=6.1.0
+
+# ─── 文档导出（可选）───
+python-docx>=1.0.0  # Word 导出
 
 # ─── 打包工具（开发时用）───
 # pyinstaller>=6.0

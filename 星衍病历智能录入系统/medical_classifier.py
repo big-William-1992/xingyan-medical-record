@@ -4,6 +4,8 @@
 """
 import re
 
+from section_parser import SectionParser
+
 
 class MedicalClassifier:
     """
@@ -384,7 +386,8 @@ class MedicalClassifier:
     ]
 
     # 字段关键词映射（用于从连续文本中提取字段内容）
-    FIELD_KEYWORDS = {
+    # 已在 __init__ 中从 FIELD_SIGNALS 自动派生，此处保留作为参考文档
+    _FIELD_KEYWORDS_REF = {
         "姓名": ["姓名", "叫啥", "名字"],
         "性别": ["性别"],
         "年龄": ["年龄"],
@@ -442,6 +445,11 @@ class MedicalClassifier:
                 "max_chars": info.get("max_chars", 999),
                 "min_chars": info.get("min_chars", 0),
             }
+        # FIELD_KEYWORDS 派生自 FIELD_SIGNALS（保证单一数据源）
+        self.FIELD_KEYWORDS = {
+            field: list(info.get("keywords", []))
+            for field, info in self.FIELD_SIGNALS.items()
+        }
 
     def classify(self, text):
         """
@@ -814,7 +822,6 @@ class MedicalClassifier:
         增量填充模板 —— 只填充空字段，不覆盖已有内容。
         用于多次录音场景：每次只处理新的 ASR 文本，保留已填好的字段。
         """
-        from section_parser import SectionParser
         parser = SectionParser()
 
         # 归一化 ASR 文本（补全缺失的字段冒号）

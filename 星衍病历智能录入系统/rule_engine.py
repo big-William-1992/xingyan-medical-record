@@ -5,6 +5,7 @@
 import json
 import os
 import re
+import shutil
 
 
 class RuleEngine:
@@ -18,7 +19,7 @@ class RuleEngine:
         self.load_rules()
 
     def load_rules(self):
-        """从文件加载规则"""
+        """从文件加载规则（损坏文件自动备份并保留默认）"""
         if not os.path.exists(self.rules_path):
             self._create_default_rules()
             return
@@ -27,7 +28,15 @@ class RuleEngine:
                 data = json.load(f)
             self.rules = data
         except Exception as e:
-            print(f"[RuleEngine] 规则加载失败: {e}")
+            # 备份损坏文件，避免用户规则丢失
+            backup_path = self.rules_path + ".corrupted"
+            try:
+                shutil.copy2(self.rules_path, backup_path)
+                print(f"[RuleEngine] 规则文件损坏，已备份到 {backup_path}: {e}")
+            except Exception:
+                print(f"[RuleEngine] 规则加载失败（无法备份）: {e}")
+            # 加载默认规则
+            self._create_default_rules()
 
     def _create_default_rules(self):
         """创建默认规则文件"""

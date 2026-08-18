@@ -391,33 +391,32 @@ class SectionParser:
 
         return result
 
+    # 预编译字段替换正则
+    _FIELD_REPLACE_RE = re.compile(r'([^：:\s]+)[：: \t]*([^\n]*)', re.MULTILINE)
+
     def _replace_field(self, template_text, field, content):
-        """替换模板中指定字段的内容"""
-        # 匹配字段名 + 冒号/空格 + 任意内容直到换行
-        pattern = re.compile(
-            r'(' + re.escape(field) + r'[：: \t]*)([^\n]*)',
-            re.MULTILINE
-        )
-        match = pattern.search(template_text)
-        if match:
-            replacement = f"{field}：{content}"
-            return template_text[:match.start()] + replacement + template_text[match.end():]
-        return template_text
+        """替换模板中指定字段的内容（替换所有匹配位置）"""
+        def _replacer(m):
+            field_name = m.group(1)
+            if field_name == field:
+                return f"{field}：{content}"
+            return m.group(0)
+        return self._FIELD_REPLACE_RE.sub(_replacer, template_text)
 
     def _extract_template_fields(self, template_content):
-        """从模板内容中提取所有字段名（按出现顺序）"""
+        """从模板内容中提取所有字段名（按出现顺序，去重）"""
         fields = []
+        seen = set()
         lines = template_content.split('\n')
         for line in lines:
             line = line.strip()
             if not line:
                 continue
-            # 匹配字段名（冒号前的内容）
             match = re.match(r'^([^：:\s]+)[：:\s]', line)
             if match:
                 field_name = match.group(1)
-                # 检查是否是已知字段
-                if field_name in self.FIELD_ALIASES:
+                if field_name in self.FIELD_ALIASES and field_name not in seen:
+                    seen.add(field_name)
                     fields.append(field_name)
         return fields
 

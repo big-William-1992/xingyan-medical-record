@@ -24,9 +24,6 @@
 import os
 import sys
 import json
-import hashlib
-import hmac
-import base64
 from datetime import datetime, timedelta
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -39,38 +36,11 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont, QColor, QPalette, QCursor
 
 
-# ─── 核心授权算法（与 license_manager.py 一致）─ ─
-_LICENSE_SECRET = "x7y9a2e4f6b8c0d1e3f5a7b9c2d4e6f8"
+# ─── 核心授权算法（复用 license_manager.py）─ ─
+from license_manager import LicenseManager
 
-
-def generate_activation_code(machine_id: str, expiry_days=None) -> str:
-    """生成激活码（含有效期选项）"""
-    machine_id = machine_id.strip().upper()
-    if len(machine_id) != 16:
-        raise ValueError(f"机器码必须 16 位十六进制，当前 {len(machine_id)} 位")
-    
-    sig = hmac.new(
-        _LICENSE_SECRET.encode("utf-8"),
-        machine_id.encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
-    
-    code = (machine_id[:8] + sig[:8]).upper()
-    return "-".join(code[i:i+4] for i in range(0, 16, 4))
-
-
-def verify_activation_code(machine_id: str, code: str, expiry_date=None) -> bool:
-    """验证激活码并检查有效期"""
-    machine_id = machine_id.strip().upper()
-    code = code.strip().replace("-", "").upper()
-    
-    if len(code) != 16:
-        return False
-    if code[:8] != machine_id[:8]:
-        return False
-    
-    expected = generate_activation_code(machine_id).replace("-", "").upper()
-    return code == expected and (expiry_date is None or datetime.now() <= expiry_date)
+generate_activation_code = LicenseManager.generate_activation_code
+verify_activation_code = LicenseManager.verify_activation_code
 
 
 # ─── 数据存储 ──────────────────────────────

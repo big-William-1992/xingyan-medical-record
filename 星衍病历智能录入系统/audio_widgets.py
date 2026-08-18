@@ -331,16 +331,20 @@ class AudioPlayer:
 
     def play(self):
         """从头或当前位置开始播放"""
-        if self._data is None or self._playing:
-            return
-        try:
-            import sounddevice as sd
-        except Exception as e:
-            print(f"[AudioPlayer] sounddevice 不可用: {e}")
-            return
+        with self._lock:
+            if self._data is None or self._playing:
+                return
+            try:
+                import sounddevice as sd
+            except Exception as e:
+                print(f"[AudioPlayer] sounddevice 不可用: {e}")
+                return
 
-        def _callback(outdata, frames, time_info, status):
-            with self._lock:
+            def _callback(outdata, frames, time_info, status):
+                if self._data is None:
+                    outdata[:] = 0
+                    self._playing = False
+                    return
                 start = self._frame
                 end = start + frames
                 if start >= len(self._data):
@@ -357,26 +361,27 @@ class AudioPlayer:
                     outdata[:, 0] = chunk
                     self._frame = end
 
-        try:
-            self._stream = sd.OutputStream(
-                samplerate=self._sr, channels=1, dtype="float32",
-                callback=_callback, finished_callback=self._on_stream_finished
-            )
-            self._stream.start()
-            self._playing = True
-        except Exception as e:
-            print(f"[AudioPlayer] 播放启动失败: {e}")
+            try:
+                self._stream = sd.OutputStream(
+                    samplerate=self._sr, channels=1, dtype="float32",
+                    callback=_callback, finished_callback=self._on_stream_finished
+                )
+                self._stream.start()
+                self._playing = True
+            except Exception as e:
+                print(f"[AudioPlayer] 播放启动失败: {e}")
 
     def pause(self):
         """暂停（停止流但保留位置）"""
-        self._playing = False
-        if self._stream:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception:
-                pass
-            self._stream = None
+        with self._lock:
+            self._playing = False
+            if self._stream:
+                try:
+                    self._stream.stop()
+                    self._stream.close()
+                except Exception as e:
+                    print(f"[Audio] 停止流失败: {e}")
+                self._stream = None
 
     def stop(self):
         """停止并回到开头"""
@@ -394,8 +399,8 @@ class AudioPlayer:
         if self.on_finished:
             try:
                 self.on_finished()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Audio] 播放完成回调失败: {e}")
 
 
 # ═══════════════════════════════════════════════════════════

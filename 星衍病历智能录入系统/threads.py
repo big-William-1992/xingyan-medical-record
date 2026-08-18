@@ -28,7 +28,17 @@ class ListenThread(QThread):
             if text and self._recording:
                 self.partial_text.emit(text)
 
-        self.asr.start_listening(on_partial=_stream_partial)
+        # on_stream_error 用于通知 UI 层恢复状态（退避 / 熔断 / 恢复）
+        def _on_stream_error(msg):
+            if msg and self._recording:
+                self.status_changed.emit(msg)
+
+        ok = self.asr.start_listening(on_partial=_stream_partial, on_stream_error=_on_stream_error)
+        if not ok:
+            self.status_changed.emit("录音启动失败：模型未就绪")
+            self.text_ready.emit("")
+            self._recording = False
+            return
 
         while self._recording and self.asr.is_listening:
             self.msleep(100)
@@ -77,7 +87,7 @@ class DiagnosisThread(QThread):
         self.analysis_done.emit(result)
 
 
-def create_listen_thread(asr, on_text_ready=None, on_partial=None, on_status=None):
+def create_listen_thread(asr, on_text_ready=None, on_partial=None, on_status=None, on_stream_error=None):
     """
     统一创建语音识别监听线程并连接信号（MedVoiceApp / WebViewApp 共用）
 
@@ -86,6 +96,8 @@ def create_listen_thread(asr, on_text_ready=None, on_partial=None, on_status=Non
         on_text_ready: 最终识别结果回调（str）
         on_partial: 流式中间结果回调（str）
         on_status: 状态变化回调（str）
+        on_stream_error: 流式识别恢复状态回调（str），用于通知 UI 层
+            可能值：USER_MESSAGES["stream_error"] / USER_MESSAGES["circuit_open"] / USER_MESSAGES["recovered"]
 
     Returns:
         ListenThread 实例（未启动，需调用 .start()）
@@ -97,6 +109,8 @@ def create_listen_thread(asr, on_text_ready=None, on_partial=None, on_status=Non
         thread.partial_text.connect(on_partial)
     if on_status:
         thread.status_changed.connect(on_status)
+    if on_stream_error:
+        thread.status_changed.connect(on_stream_error)
     return thread
 
 

@@ -18,6 +18,7 @@ import copy
 import json
 import os
 import shutil
+import fcntl
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -105,18 +106,32 @@ class CorrectionMemory:
         record.setdefault("memory_id", self._next_id())
         record.setdefault("created_at", _format_dt(_utcnow()))
         record.setdefault("updated_at", record["created_at"])
-        with open(self.memory_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._memories.append(record)
-        self._update_index_after_write()
+        lock_path = self.memory_path.with_suffix(".lock")
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                with open(self.memory_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                self._memories.append(record)
+                self._update_index_after_write()
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
         return record
 
     def _overwrite_memories(self, records):
-        with open(self.memory_path, "w", encoding="utf-8") as f:
-            for record in records:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
-        self._memories = list(records)
-        self._update_index_after_write()
+        lock_path = self.memory_path.with_suffix(".lock")
+        tmp_path = self.memory_path.with_suffix(".tmp")
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    for record in records:
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+                os.replace(tmp_path, self.memory_path)
+                self._memories = list(records)
+                self._update_index_after_write()
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def backup(self):
         if not self.memory_path.exists():
@@ -186,7 +201,9 @@ class CorrectionMemory:
 
     def _next_id(self):
         base = int(datetime.utcnow().strftime("%Y%m%d%H%M%S%f"))
-        return f"mem_{base}"
+        seq = getattr(self, "_id_seq", 0) + 1
+        self._id_seq = seq
+        return f"mem_{base}_{seq:03d}"
 
     # ==================== 写入接口 ====================
 

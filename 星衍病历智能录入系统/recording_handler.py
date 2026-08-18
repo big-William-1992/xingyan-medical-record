@@ -82,6 +82,7 @@ class RecordingHandler:
             on_text_ready=app._on_recognized,
             on_partial=app._on_partial,
             on_status=app.status_bar.showMessage,
+            on_stream_error=app._on_asr_stream_error if hasattr(app, '_on_asr_stream_error') else None,
         )
         app.listen_thread.start()
 

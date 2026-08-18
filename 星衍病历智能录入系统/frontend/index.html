@@ -435,6 +435,81 @@ html,body{height:100%;overflow:hidden;font-family:var(--font-body);background:va
 // ═══════════════════════════════════════════════════════════
 const $=s=>document.querySelector(s),$$=s=>document.querySelectorAll(s);
 const API=location.origin;
+
+// ─── JWT 认证辅助（登录弹窗 + Authorization 头）───
+let _authToken = localStorage.getItem('xingyan_token') || '';
+
+function authHeaders(extra = {}) {
+  if (_authToken) extra['Authorization'] = 'Bearer ' + _authToken;
+  return extra;
+}
+
+// 保存原始 fetch（登录弹窗内部使用，避免递归包装）
+const _origFetch = window.fetch.bind(window);
+
+// 包装全局 fetch：自动携带 Authorization 头；401 时弹出登录框并重试一次
+window.fetch = async (url, options = {}) => {
+  options = options || {};
+  options.headers = authHeaders(options.headers || {});
+  const res = await _origFetch(url, options);
+  if (res.status === 401 && !options._authRetried) {
+    const ok = await showLoginDialog();
+    if (ok) {
+      options._authRetried = true;
+      options.headers = authHeaders(options.headers || {});
+      return _origFetch(url, options);
+    }
+  }
+  return res;
+};
+
+function showLoginDialog() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9999;display:flex;align-items:center;justify-content:center;`;
+    overlay.innerHTML = `
+      <div style="background:var(--bg2,#1e2530);border:1px solid var(--border,#333);border-radius:16px;padding:28px;width:320px;box-shadow:0 20px 60px rgba(0,0,0,.5)">
+        <h3 style="color:var(--accent,#4dd0ff);margin:0 0 16px;font-size:17px">🔐 请登录</h3>
+        <input id="loginUser" placeholder="用户名" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:10px;border-radius:8px;border:1px solid var(--border,#333);background:var(--surface,#161b22);color:var(--text,#e6edf3);font-size:14px">
+        <input id="loginPass" type="password" placeholder="密码" style="width:100%;box-sizing:border-box;padding:10px 12px;margin-bottom:16px;border-radius:8px;border:1px solid var(--border,#333);background:var(--surface,#161b22);color:var(--text,#e6edf3);font-size:14px">
+        <div style="display:flex;gap:10px">
+          <button id="loginCancel" style="flex:1;padding:10px;border-radius:8px;border:1px solid var(--border,#333);background:transparent;color:var(--text3,#8b949e);cursor:pointer">取消</button>
+          <button id="loginOk" style="flex:1;padding:10px;border-radius:8px;border:none;background:var(--accent,#4dd0ff);color:#000;font-weight:700;cursor:pointer">登录</button>
+        </div>
+        <div id="loginMsg" style="color:#ff6b6b;font-size:12px;margin-top:10px;min-height:16px"></div>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    const doLogin = async () => {
+      const u = overlay.querySelector('#loginUser').value.trim();
+      const p = overlay.querySelector('#loginPass').value;
+      if (!u || !p) { overlay.querySelector('#loginMsg').textContent = '请输入用户名和密码'; return; }
+      try {
+        const res = await _origFetch(API + '/api/auth/login', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u, password: p }),
+        });
+        const d = await res.json();
+        if (d.ok && d.token) {
+          _authToken = d.token;
+          localStorage.setItem('xingyan_token', d.token);
+          overlay.remove();
+          resolve(true);
+        } else {
+          overlay.querySelector('#loginMsg').textContent = d.msg || '登录失败';
+        }
+      } catch (e) {
+        overlay.querySelector('#loginMsg').textContent = '网络错误';
+      }
+    };
+
+    overlay.querySelector('#loginOk').onclick = doLogin;
+    overlay.querySelector('#loginPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+    overlay.querySelector('#loginCancel').onclick = () => { overlay.remove(); resolve(false); };
+    overlay.querySelector('#loginUser').focus();
+  });
+}
+
 const FIELDS=['主诉','现病史','既往史','个人史','婚育史','家族史','体格检查','辅助检查','初步诊断','诊疗计划'];
 let currentDept='内科', currentField='主诉', currentTpl='', recordId=null;
 let currentBaseContent='';

@@ -10,13 +10,17 @@ import hashlib
 import secrets
 import os
 from functools import wraps
-from typing import Optional, Dict
+from typing import Optional, Dict, Callable
 
-
-# JWT 配置（生产环境必须通过环境变量注入密钥！）
-JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "dev-insecure-secret-change-me")
+# JWT 配置（必须通过环境变量注入，缺失则启动即报错）
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = int(os.environ.get("JWT_EXPIRATION_HOURS", "24"))
+JWT_MIN_SECRET_LEN = 32  # 密钥最小长度（字符）
+JWT_SECRET_KEY = os.environ["JWT_SECRET_KEY"]  # KeyError if missing
+if not JWT_SECRET_KEY or len(JWT_SECRET_KEY) < JWT_MIN_SECRET_LEN:
+    raise RuntimeError(
+        f"JWT_SECRET_KEY 环境变量未设置或过短（至少 {JWT_MIN_SECRET_LEN} 字符）"
+    )
 
 
 class JWTAuth:
@@ -39,11 +43,14 @@ class JWTAuth:
             "user_id": user_id,
             "username": username,
             "role": role,
-            "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=JWT_EXPIRATION_HOURS),
-            "iat": datetime.datetime.utcnow(),
+            "exp": datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=JWT_EXPIRATION_HOURS),
+            "iat": datetime.datetime.now(datetime.timezone.utc),
+            "iss": "xingyan-medical",
+            "aud": "xingyan-api",
         }
-        
-        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+        token = jwt.encode(payload, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM,
+                           headers={"kid": "xingyan-v2"})
         return token
     
     @staticmethod
@@ -58,7 +65,12 @@ class JWTAuth:
             解码后的 payload，验证失败返回 None
         """
         try:
-            payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
+            payload = jwt.decode(
+                token, JWT_SECRET_KEY,
+                algorithms=[JWT_ALGORITHM],
+                issuer="xingyan-medical",
+                audience="xingyan-api",
+            )
             return payload
         except jwt.ExpiredSignatureError:
             print("[Auth] Token 已过期")
@@ -94,7 +106,7 @@ class PasswordHasher:
     """密码哈希类"""
     
     @staticmethod
-    def hash_password(password: str, salt: Optional[str] = None) -> tuple:
+    def hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
         """
         哈希密码
         
@@ -129,7 +141,7 @@ class PasswordHasher:
         return new_hashed == hashed
 
 
-def require_auth(func):
+def require_auth(func: Callable) -> Callable:
     """
     需要认证的装饰器
     
@@ -176,39 +188,39 @@ def require_auth(func):
     return wrapper
 
 
-def require_admin(func):
+def require_admin(func: Callable) -> Callable:
     """
-    需要管理员权限的装饰器
-    
-    使用方法：
-    @app.delete("/api/users/{user_id}")
-    @require_admin
-    async def delete_user(user_id: int, request: Request):
-        user = request.state.user
-        if user["role"] != "admin":
-            raise HTTPException(status_code=403, detail="权限不足")
+    需要管理员权限的装饰器（内部调用 require_auth 确保已认证）
     """
     @wraps(func)
     async def wrapper(*args, **kwargs):
         from fastapi import Request, HTTPException
-        
-        # 获取 request 对象
+
+        # 先确保已认证
         request = None
         for arg in args:
             if isinstance(arg, Request):
                 request = arg
                 break
-        
         if not request:
             raise HTTPException(status_code=500, detail="Request object not found")
-        
-        # 检查用户角色
-        if not hasattr(request.state, "user") or request.state.user.get("role") != "admin":
+
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="未提供认证令牌")
+
+        payload = JWTAuth.verify_token(auth_header.split(" ")[1])
+        if not payload:
+            raise HTTPException(status_code=401, detail="认证令牌无效或已过期")
+
+        request.state.user = payload
+
+        # 再检查角色
+        if payload.get("role") != "admin":
             raise HTTPException(status_code=403, detail="需要管理员权限")
-        
-        # 调用原始函数
+
         return await func(*args, **kwargs)
-    
+
     return wrapper
 
 
@@ -226,27 +238,26 @@ def verify_token(token: str) -> Optional[Dict]:
 if __name__ == "__main__":
     # 测试
     print("=== JWT 认证测试 ===")
-    
+
     # 生成 Token
     token = create_token(user_id=1, username="test_user", role="doctor")
     print(f"生成的 Token: {token[:50]}...")
-    
+
     # 验证 Token
     payload = verify_token(token)
     print(f"验证结果: {payload}")
-    
+
     # 刷新 Token
     new_token = JWTAuth.refresh_token(token)
     print(f"刷新后的 Token: {new_token[:50]}...")
-    
+
     # 密码哈希测试
     print("\n=== 密码哈希测试 ===")
     password = "test_password_123"
     hashed, salt = PasswordHasher.hash_password(password)
-    print(f"原始密码: {password}")
-    print(f"哈希密码: {hashed}")
-    print(f"盐值: {salt}")
-    
+    print(f"密码哈希: {hashed[:30]}...")
+    print(f"盐值: {salt[:30]}...")
+
     # 验证密码
     is_valid = PasswordHasher.verify_password(password, hashed, salt)
     print(f"密码验证: {'成功' if is_valid else '失败'}")

@@ -85,7 +85,7 @@ def export_csv(data, output_path):
                 try:
                     dt = parse_date(valid_until)
                     valid_until = dt.strftime("%Y-%m-%d")
-                except:
+                except Exception:
                     pass
             
             writer.writerow([
@@ -143,7 +143,7 @@ def export_markdown(data, output_path):
             try:
                 dt = parse_date(valid_until)
                 valid_until = dt.strftime("%Y-%m-%d")
-            except:
+            except Exception:
                 valid_until = "永久"
         else:
             valid_until = "永久"
@@ -219,7 +219,7 @@ def show_stats(data):
             try:
                 dt = parse_date(activated)
                 months[dt.strftime("%Y-%m")] += 1
-            except:
+            except Exception:
                 pass
     
     if months:

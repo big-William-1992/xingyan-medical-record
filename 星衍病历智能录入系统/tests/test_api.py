@@ -14,36 +14,39 @@ class TestAPI:
     @pytest.fixture
     def client(self):
         """创建测试客户端"""
-        # Mock所有依赖
-        with patch('app_server.get_asr') as mock_asr, \
-             patch('app_server.get_kg') as mock_kg, \
-             patch('app_server.get_qa') as mock_qa, \
-             patch('app_server.get_template_engine') as mock_te, \
-             patch('app_server.get_corrector') as mock_corrector, \
-             patch('app_server.get_db') as mock_db:
-            
-            # 配置mock
+        # 在 routes 模块的 import 点上 patch（每个模块只 patch 自己 import 的内容）
+        with patch('server.routes_auth.get_db') as mock_db_auth, \
+             patch('server.routes_records.get_db') as mock_db_records, \
+             patch('server.routes_qa.get_asr') as mock_asr, \
+             patch('server.routes_qa.get_kg') as mock_kg, \
+             patch('server.routes_qa.get_qa') as mock_qa, \
+             patch('server.routes_qa.get_template_engine') as mock_te, \
+             patch('server.routes_qa.get_corrector') as mock_corrector, \
+             patch('server.routes_system.get_asr') as mock_asr_sys, \
+             patch('server.routes_system.get_kg') as mock_kg_sys, \
+             patch('server.routes_system.get_db') as mock_db_sys:
+
+            mock_db = mock_db_auth
+            mock_db.return_value.list_records.return_value = []
+
             mock_asr.return_value = Mock()
             mock_asr.return_value.is_ready.return_value = True
             mock_asr.return_value._current_hotwords = "高血压 糖尿病"
-            
+
             mock_kg.return_value = Mock()
             mock_kg.return_value.entities = {"高血压": {"描述": "高血压描述"}}
             mock_kg.return_value.relations = []
             mock_kg.return_value.drug_inserts = {}
-            
+
             mock_qa.return_value = Mock()
             mock_qa.return_value.answer.return_value = {"text": "测试回答", "found": True}
-            
+
             mock_te.return_value = Mock()
             mock_te.return_value.get_templates.return_value = [{"name": "入院记录", "content": "主诉："}]
-            
+
             mock_corrector.return_value = Mock()
             mock_corrector.return_value.correct.return_value = ("纠正后文本", [])
-            
-            mock_db.return_value = Mock()
-            mock_db.return_value.list_records.return_value = []
-            
+
             from app_server import app
             return TestClient(app)
     
@@ -129,13 +132,23 @@ class TestAPI:
 
 class TestRateLimiting:
     """频率限制测试"""
-    
+
     @pytest.fixture
     def client(self):
-        with patch('app_server.get_kg') as mock_kg:
+        with patch('server.routes_qa.get_kg') as mock_kg, \
+             patch('server.routes_qa.get_asr') as mock_asr, \
+             patch('server.routes_system.get_asr') as mock_asr_sys, \
+             patch('server.routes_system.get_kg') as mock_kg_sys, \
+             patch('server.routes_system.get_db') as mock_db_sys:
+
             mock_kg.return_value = Mock()
             mock_kg.return_value.entities = {}
-            
+            mock_asr.return_value = Mock()
+            mock_asr.return_value.is_ready.return_value = True
+            mock_asr_sys.return_value = Mock()
+            mock_kg_sys.return_value = Mock()
+            mock_db_sys.return_value = Mock()
+
             from app_server import app
             return TestClient(app)
     

@@ -159,7 +159,7 @@ class MockCorrectThread(QThread):
 class MedVoiceApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("星衍AI智能病历录入系统 v1.0 (Demo)")
+        self.setWindowTitle("星衍AI智能病历录入系统 v2.0 (Demo)")
         self.setGeometry(100, 100, 1200, 800)
 
         self.corrector = DemoCorrector()

@@ -80,8 +80,8 @@ class MedicalLM:
                         w = line.strip()
                         if len(w) >= 2:
                             self._terms.add(w)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[LM] 加载医学术语失败 ({path}): {e}")
         # 建立字符索引（加速查找包含某字的词）
         for term in self._terms:
             for ch in term:

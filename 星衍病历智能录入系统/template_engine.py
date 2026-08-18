@@ -31,8 +31,12 @@ class TemplateEngine:
             if not filename.endswith('.json'):
                 continue
             path = os.path.join(self.templates_dir, filename)
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[Template] 跳过损坏模板 {filename}: {e}")
+                continue
             base = filename.replace('.json', '')
             if '-' in base:
                 main_dept, variant = base.split('-', 1)

@@ -143,20 +143,25 @@ class RedisCache:
 
 
 # 全局缓存实例
-_cache_instance = None
+_cache_instances = {}  # use_redis -> instance
 
 
-def get_cache(use_redis: bool = False) -> MemoryCache:
-    """获取缓存实例"""
-    global _cache_instance
-    
-    if _cache_instance is None:
+def get_cache(use_redis: bool = False):
+    """获取缓存实例（Redis 不可用时自动回退 MemoryCache）"""
+    global _cache_instances
+
+    if use_redis not in _cache_instances:
         if use_redis:
-            _cache_instance = RedisCache()
+            instance = RedisCache()
+            if not getattr(instance, "_available", False):
+                # Redis 不可用：回退到内存缓存，且标记该槽位已确定
+                _cache_instances[use_redis] = instance._fallback
+            else:
+                _cache_instances[use_redis] = instance
         else:
-            _cache_instance = MemoryCache()
-    
-    return _cache_instance
+            _cache_instances[use_redis] = MemoryCache()
+
+    return _cache_instances[use_redis]
 
 
 def cache_key(*args, **kwargs) -> str:

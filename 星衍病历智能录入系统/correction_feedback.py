@@ -14,8 +14,10 @@
 训练时使用：
   python train_lm.py  # 读取所有语料 + 反馈，重训 medical_3gram.pkl
 """
+import hashlib
 import json
 import os
+import fcntl
 import time
 from datetime import datetime
 
@@ -94,8 +96,8 @@ class CorrectionFeedback:
         if not text or len(text.strip()) < min_length:
             return False
 
-        # 简单哈希去重（避免同一份病历反复写入）
-        text_hash = str(hash(text.strip()))
+        # 稳定哈希去重（避免同一份病历反复写入）
+        text_hash = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
         if text_hash in self._corpus_hashes:
             return False
 
@@ -146,17 +148,17 @@ class CorrectionFeedback:
                             status = rec.get("status", "pending")
                             if status in stats:
                                 stats[status] += 1
-                        except json.JSONDecodeError:
-                            pass
-            except Exception:
-                pass
+                        except json.JSONDecodeError as e:
+                            print(f"[Feedback] 语料行解析失败: {e}")
+            except Exception as e:
+                print(f"[Feedback] 读取反馈目录失败: {e}")
         # 统计语料行数
         if os.path.exists(self.corpus_path):
             try:
                 with open(self.corpus_path, "r", encoding="utf-8") as f:
                     stats["corpus_sentences"] = sum(1 for _ in f)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[Feedback] 语料行数统计失败: {e}")
         return stats
 
     # ─── 内部方法 ─────────────────────────────────────────
@@ -171,64 +173,70 @@ class CorrectionFeedback:
             print(f"[Feedback] 写入失败: {e}")
 
     def _update_status(self, original, corrected, new_status):
-        """更新最近一条匹配的 pending 记录状态"""
+        """更新最近一条匹配的 pending 记录状态（加锁防止并发覆盖）"""
         if not os.path.exists(self.feedback_path):
             return
-        try:
-            lines = []
-            updated = False
-            with open(self.feedback_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            # 从后往前找匹配的 pending 记录
-            for i in range(len(lines) - 1, -1, -1):
-                line = lines[i].strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    if (rec.get("original") == original and
-                            rec.get("corrected") == corrected and
-                            rec.get("status") == "pending"):
-                        rec["status"] = new_status
-                        rec["resolved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
-                        updated = True
-                        break
-                except json.JSONDecodeError:
-                    continue
-            if updated:
-                with open(self.feedback_path, "w", encoding="utf-8") as f:
-                    f.writelines(lines)
-        except Exception as e:
-            print(f"[Feedback] 状态更新失败: {e}")
+        lock_path = self.feedback_path + ".lock"
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                lines = []
+                updated = False
+                with open(self.feedback_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                # 从后往前找匹配的 pending 记录
+                for i in range(len(lines) - 1, -1, -1):
+                    line = lines[i].strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        if (rec.get("original") == original and
+                                rec.get("corrected") == corrected and
+                                rec.get("status") == "pending"):
+                            rec["status"] = new_status
+                            rec["resolved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
+                            updated = True
+                            break
+                    except json.JSONDecodeError:
+                        continue
+                if updated:
+                    with open(self.feedback_path, "w", encoding="utf-8") as f:
+                        f.writelines(lines)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _batch_update_status(self, old_status, new_status):
-        """批量更新所有 old_status 记录为 new_status"""
+        """批量更新所有 old_status 记录为 new_status（加锁防止并发覆盖）"""
         if not os.path.exists(self.feedback_path):
             return
-        try:
-            lines = []
-            changed = False
-            with open(self.feedback_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            for i, line in enumerate(lines):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    rec = json.loads(stripped)
-                    if rec.get("status") == old_status:
-                        rec["status"] = new_status
-                        rec["resolved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
-                        changed = True
-                except json.JSONDecodeError:
-                    continue
-            if changed:
-                with open(self.feedback_path, "w", encoding="utf-8") as f:
-                    f.writelines(lines)
-        except Exception as e:
-            print(f"[Feedback] 批量更新失败: {e}")
+        lock_path = self.feedback_path + ".lock"
+        with open(lock_path, "w") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                lines = []
+                changed = False
+                with open(self.feedback_path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                for i, line in enumerate(lines):
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        rec = json.loads(stripped)
+                        if rec.get("status") == old_status:
+                            rec["status"] = new_status
+                            rec["resolved_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            lines[i] = json.dumps(rec, ensure_ascii=False) + "\n"
+                            changed = True
+                    except json.JSONDecodeError:
+                        continue
+                if changed:
+                    with open(self.feedback_path, "w", encoding="utf-8") as f:
+                        f.writelines(lines)
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _split_sentences(self, text):
         """将病历文本按句切分（适配 LM 训练格式）"""
@@ -253,9 +261,14 @@ class CorrectionFeedback:
             return {}
 
     def _save_corpus_hashes(self):
-        """保存文本哈希"""
+        """保存文本哈希（原子写入，防止崩溃导致文件损坏）"""
         try:
-            with open(_CORPUS_HASH_PATH, "w", encoding="utf-8") as f:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(_CORPUS_HASH_PATH),
+                suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump(self._corpus_hashes, f, ensure_ascii=False)
-        except Exception:
-            pass
+            os.replace(tmp_path, _CORPUS_HASH_PATH)
+        except Exception as e:
+            print(f"[Feedback] 保存语料哈希失败: {e}")
