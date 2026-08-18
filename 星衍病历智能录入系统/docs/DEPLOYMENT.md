@@ -102,7 +102,25 @@ export DATABASE_PATH=/path/to/database.db
 
 # 日志级别（可选）
 export LOG_LEVEL=INFO
+
+# ─── JWT 认证（生产环境推荐）───
+# 启用强制认证：所有 API（除登录外）必须携带 Token，否则返回 401
+export XINGYAN_JWT_ENFORCE=1
+
+# JWT 签名密钥（务必改为随机长字符串！）
+export JWT_SECRET_KEY=$(openssl rand -hex 32)
+
+# JWT 有效期（小时，默认 24）
+export JWT_EXPIRATION_HOURS=24
+
+# ─── 测试/CI（可选）───
+# 跳过 ASR 引擎加载（避免触发 1GB 模型下载，CI 环境使用）
+export XINGYAN_SKIP_ASR=1
 ```
+
+> **安全提示**：`JWT_SECRET_KEY` 必须使用强随机值，切勿使用代码默认值。
+> 强制认证模式下，前端需先调用 `POST /api/auth/login` 获取 Token，
+> 并在后续请求头携带 `Authorization: Bearer <token>`。
 
 ### 配置文件
 

@@ -15,7 +15,7 @@ import wave
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, Body, Request, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -109,6 +109,56 @@ limiter = Limiter(key_func=get_remote_address)
 
 app = FastAPI(title="星衍AI · 智能病历录入", version="2.0")
 app.state.limiter = limiter
+
+# ═══════════════════════════════════════════════════
+# JWT 认证（可选强制：设置环境变量 XINGYAN_JWT_ENFORCE=1 启用）
+# 默认关闭：局域网/本地部署无需登录即可使用（兼容现有前端）
+# ═══════════════════════════════════════════════════
+
+JWT_ENFORCE = os.environ.get("XINGYAN_JWT_ENFORCE", "0") == "1"
+
+
+def get_current_user(request: Request) -> dict:
+    """
+    从 Authorization 头解析当前用户（JWT），未认证时返回默认用户。
+    - XINGYAN_JWT_ENFORCE=1 时：未认证请求抛出 401
+    - 默认：返回 user_id=1 默认用户（兼容现有前端）
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        try:
+            from auth import verify_token
+            payload = verify_token(auth_header[7:])
+            if payload:
+                return {
+                    "user_id": payload.get("user_id", 1),
+                    "username": payload.get("username", ""),
+                    "role": payload.get("role", "doctor"),
+                }
+        except Exception as e:
+            print(f"[Auth] Token 解析失败: {e}")
+
+    if JWT_ENFORCE:
+        raise HTTPException(status_code=401, detail="未认证，请登录")
+    return {"user_id": 1, "username": "默认用户", "role": "doctor"}
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: dict = Body(...)):
+    """用户名密码登录，返回 JWT Token（XINGYAN_JWT_ENFORCE=1 时前端需调用）"""
+    from auth import create_token
+    username = (body.get("username") or "").strip()
+    password = body.get("password") or ""
+    if not username or not password:
+        return {"ok": False, "msg": "用户名和密码不能为空"}
+
+    db = get_db()
+    user = db.verify_user(username, password)
+    if not user:
+        return {"ok": False, "msg": "用户名或密码错误"}
+
+    token = create_token(user_id=user["id"], username=user["username"], role=user.get("role", "doctor"))
+    return {"ok": True, "token": token, "user": user}
 
 # CORS 配置：支持本机和局域网访问
 ALLOWED_ORIGINS = [
@@ -370,8 +420,10 @@ async def kg_query(request: Request, q: str = Query(...)):
     return result
 
 @app.post("/api/records")
-async def save_record(body: dict = Body(...)):
+async def save_record(request: Request, body: dict = Body(...)):
+    """保存病历（按当前登录用户隔离）"""
     db = get_db()
+    user = get_current_user(request)
     content = body.get("content", "").strip()
     if not content:
         return {"ok": False, "msg": "空内容"}
@@ -383,7 +435,7 @@ async def save_record(body: dict = Body(...)):
     if record_id:
         db.update_record(record_id, content=content)
     else:
-        record_id = db.create_record(1, patient_name, dept, "", content, "草稿")
+        record_id = db.create_record(user["user_id"], patient_name, dept, "", content, "草稿")
     # 收集语料
     try:
         get_feedback().collect_corpus(content)
@@ -392,9 +444,11 @@ async def save_record(body: dict = Body(...)):
     return {"ok": True, "id": record_id}
 
 @app.get("/api/records")
-async def list_records():
+async def list_records(request: Request):
+    """病历列表（仅返回当前用户的病历）"""
     db = get_db()
-    records = db.list_records(user_id=1)
+    user = get_current_user(request)
+    records = db.list_records(user_id=user["user_id"])
     return [{"id": r["id"], "patient_name": r.get("patient_name", ""),
              "department": r.get("department", ""), "updated_at": r.get("updated_at", "")}
             for r in (records or [])[:50]]
@@ -404,8 +458,9 @@ async def list_records():
 # ═══════════════════════════════════════════════════
 
 @app.get("/api/offline/package")
-async def offline_package(dept: str = Query("内科")):
+async def offline_package(request: Request, dept: str = Query("内科")):
     """预加载离线数据包（查房前调用，手机断网也能用）"""
+    user = get_current_user(request)
     te = get_template_engine()
     templates = te.get_templates(dept)
     template_list = [{"name": t["name"], "content": t["content"]} for t in templates]
@@ -426,9 +481,9 @@ async def offline_package(dept: str = Query("内科")):
     except Exception:
         pass
 
-    # 患者列表（最近50条）
+    # 患者列表（最近50条，仅当前用户）
     db = get_db()
-    records = db.list_records(user_id=1) or []
+    records = db.list_records(user_id=user["user_id"]) or []
     patients = [{"id": r["id"], "patient_name": r.get("patient_name", ""),
                  "department": r.get("department", ""), "updated_at": r.get("updated_at", ""),
                  "content": r.get("content", "")}
@@ -445,8 +500,9 @@ async def offline_package(dept: str = Query("内科")):
     }
 
 @app.post("/api/offline/sync")
-async def offline_sync(body: dict = Body(...)):
+async def offline_sync(request: Request, body: dict = Body(...)):
     """同步离线记录（手机恢复网络后批量上传）"""
+    user = get_current_user(request)
     records = body.get("records", [])
     if not records or not isinstance(records, list):
         return {"ok": False, "msg": "无同步数据"}
@@ -467,7 +523,7 @@ async def offline_sync(body: dict = Body(...)):
             dept = item.get("department", "")
             local_id = item.get("local_id", "")
 
-            record_id = db.create_record(1, patient_name, dept, "", content, "草稿")
+            record_id = db.create_record(user["user_id"], patient_name, dept, "", content, "草稿")
             synced.append({"local_id": local_id, "server_id": record_id, "ok": True})
         except Exception as e:
             failed.append({"local_id": item.get("local_id", ""), "error": str(e)})

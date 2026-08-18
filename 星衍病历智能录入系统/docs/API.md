@@ -12,11 +12,58 @@
 
 ## 认证
 
-当前版本无需认证（开发环境）。生产环境建议添加JWT认证。
+### 默认模式（开发/局域网）
+
+默认**无需认证**即可访问所有接口（兼容现有前端），所有请求按默认用户（user_id=1）处理。
+
+### 强制认证模式（生产环境）
+
+设置环境变量 `XINGYAN_JWT_ENFORCE=1` 后启用 JWT 认证：
+
+```bash
+XINGYAN_JWT_ENFORCE=1 python app_server.py
+```
+
+启用后，除登录接口外，所有 API 请求必须携带 Token：
+
+```
+Authorization: Bearer <token>
+```
+
+未携带或 Token 无效时返回 `401`。
 
 ---
 
 ## 接口列表
+
+### 0. 用户认证
+
+#### POST `/api/auth/login`
+
+用户名密码登录，获取 JWT Token。
+
+**请求体**:
+```json
+{"username": "doctor", "password": "123456"}
+```
+
+**响应示例**:
+```json
+{
+  "ok": true,
+  "token": "eyJhbGciOiJIUzI1NiIs...",
+  "user": {"id": 1, "username": "doctor", "role": "doctor"}
+}
+```
+
+**错误响应**:
+```json
+{"ok": false, "msg": "用户名或密码错误"}
+```
+
+> 用户由管理员在系统中创建（`manage_license.py` 或数据库直接录入）。
+
+---
 
 ### 1. 系统状态
 
@@ -197,6 +244,8 @@
 
 ### 7. 病历管理
 
+> 病历按**当前登录用户隔离**：列表只返回自己的病历，保存时自动归属当前用户（强制认证模式下按 Token 识别用户）。
+
 #### POST `/api/records`
 
 保存病历。
@@ -312,6 +361,50 @@ ws.send(audioBuffer);
 {"cmd": "ping"}  // 心跳检测
 ```
 
+### 11. 离线模式（预加载 + 同步）
+
+#### GET `/api/offline/package`
+
+预加载离线数据包（查房前调用，手机断网也能用）。返回模板、字段常用词、常用句、患者列表（仅当前用户）。
+
+**参数**:
+- `dept` (string, 可选): 科室名称，默认"内科"
+
+**响应示例**:
+```json
+{
+  "ok": true,
+  "timestamp": 1755500000,
+  "department": "内科",
+  "templates": [{"name": "入院记录", "content": "..."}],
+  "field_words": {"主诉": [...]},
+  "presets": {"现病史": ["..."]},
+  "patients": [{"id": "1", "patient_name": "张伟", "content": "..."}]
+}
+```
+
+#### POST `/api/offline/sync`
+
+同步离线记录（手机恢复网络后批量上传）。
+
+**请求体**:
+```json
+{
+  "records": [
+    {"local_id": "local_123", "content": "姓名：张伟\n主诉：...", "department": "内科"}
+  ]
+}
+```
+
+**响应示例**:
+```json
+{
+  "ok": true,
+  "synced": [{"local_id": "local_123", "server_id": 5, "ok": true}],
+  "failed": []
+}
+```
+
 ---
 
 ## 错误处理
@@ -319,7 +412,7 @@ ws.send(audioBuffer);
 所有API在发生错误时返回标准HTTP状态码：
 
 - `400`: 请求参数错误
-- `401`: 未认证（未来版本）
+- `401`: 未认证（强制认证模式下 Token 缺失/无效）
 - `403`: 禁止访问
 - `404`: 资源不存在
 - `429`: 请求过于频繁（频率限制）
@@ -407,6 +500,14 @@ ws.onmessage = (event) => {
 ---
 
 ## 更新日志
+
+### v2.1 (2026-08-18)
+- ✅ 添加 JWT 认证（可选强制：`XINGYAN_JWT_ENFORCE=1`）
+- ✅ 添加登录接口 `/api/auth/login`
+- ✅ 病历按用户隔离（保存/列表/离线同步）
+- ✅ 添加离线模式 API（预加载 `/api/offline/package`、同步 `/api/offline/sync`）
+- ✅ 添加 WASM 离线语音识别资源服务 `/wasm/*`
+- ✅ 添加静态资源 `/offline.js`、`/offline-asr.js`、`/service-worker.js`
 
 ### v2.0 (2026-08-15)
 - ✅ 添加频率限制

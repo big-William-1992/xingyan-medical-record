@@ -369,3 +369,59 @@ redis>=4.0.0    # Redis缓存（可选）
 **报告生成时间**: 2026-08-15  
 **报告作者**: AI Assistant  
 **版本**: v2.0
+
+---
+
+## 10. 2026-08-18 改进：JWT认证 + 离线功能恢复 + 线程统一
+
+### 10.1 JWT 认证接入（任务4）
+
+**改动**:
+- `app_server.py` 新增 `get_current_user()` 用户解析函数
+- 新增登录接口 `POST /api/auth/login`
+- 病历 CRUD / 离线 API 全部按当前用户隔离
+- 可选强制认证：`XINGYAN_JWT_ENFORCE=1` 时未认证返回 401
+
+**验证**:
+- ✅ 默认模式兼容现有前端（无需登录）
+- ✅ 强制认证模式 401 生效
+- ✅ 病历保存/列表按用户隔离
+
+### 10.2 离线功能恢复（任务1）
+
+**背景**: 2026-08-17 的提交被 revert 误删，离线功能全部丢失。
+
+**修复**:
+- 从 git 历史恢复 18 个文件（offline.js / offline-asr.js / service-worker.js 等）
+- 恢复 `/wasm` 静态目录挂载（528MB WASM 模型）
+- 恢复离线 API（`/api/offline/package` + `/api/offline/sync`）
+- 恢复 `XINGYAN_SKIP_ASR` CI 保护
+
+### 10.3 统一线程管理（任务2）
+
+**改动**:
+- `threads.py` 新增 `create_listen_thread()` / `stop_listen_thread()` 工厂函数
+- WebViewApp / MedVoiceApp 共用统一线程管理（消除 -233 行重复代码）
+
+### 10.4 CI 全绿验证（任务3）
+
+**GitHub Actions 实测结果**:
+- ✅ Code Quality Check（flake8 0 错误）
+- ✅ Security Scan（bandit High=0）
+- ✅ Documentation Check
+- ✅ Unit Tests（44 passed, 4 skipped）
+- ⚠️ Build Test（预期失败，continue-on-error 吸收）
+
+**附带的修复**:
+- `dialogs.py` 缺失导入（QGroupBox/QComboBox/QInputDialog）
+- `cache_manager.py` MD5 → SHA256（消除 bandit High 告警）
+
+### 10.5 文档更新
+
+- `README.md` → v3.1（新增移动端/离线/JWT/CI 特性）
+- `docs/API.md` → v2.1（JWT 认证、登录接口、离线 API、用户隔离说明）
+- `docs/DEPLOYMENT.md`（JWT 环境变量配置说明）
+
+---
+
+**下一步（任务5/6）**: 知识图谱 SQLite 索引缓存（启动提速）+ 补充 knowledge_qa / app_server API 测试
