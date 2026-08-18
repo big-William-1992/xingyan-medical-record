@@ -40,12 +40,21 @@ class ASREngine:
         self.recording_duration = recording_duration
         self.enable_denoise = True
 
-        # 热词相关
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        self._hotwords_path = os.path.join(base_dir, "hotwords.txt")
-        self._postprocess_path = os.path.join(base_dir, "postprocess_hotwords.txt")
-        self._user_hotwords_path = os.path.join(base_dir, "user_hotwords.txt")
-        self._kg_hotwords_path = os.path.join(base_dir, "kg_hotwords.txt")
+        # 热词相关（优先项目根目录，兼容旧路径）
+        base_dir = os.path.dirname(os.path.abspath(__file__))          # asr/ 目录
+        root_dir = os.path.dirname(base_dir)                            # 项目根目录
+        self._hotwords_path = os.path.join(root_dir, "hotwords.txt")   # 根目录 hotwords.txt
+        if not os.path.exists(self._hotwords_path):
+            self._hotwords_path = os.path.join(base_dir, "hotwords.txt")
+        self._postprocess_path = os.path.join(root_dir, "postprocess_hotwords.txt")
+        if not os.path.exists(self._postprocess_path):
+            self._postprocess_path = os.path.join(base_dir, "postprocess_hotwords.txt")
+        self._user_hotwords_path = os.path.join(root_dir, "user_hotwords.txt")
+        if not os.path.exists(self._user_hotwords_path):
+            self._user_hotwords_path = os.path.join(base_dir, "user_hotwords.txt")
+        self._kg_hotwords_path = os.path.join(root_dir, "kg_hotwords.txt")
+        if not os.path.exists(self._kg_hotwords_path):
+            self._kg_hotwords_path = os.path.join(base_dir, "kg_hotwords.txt")
         self._current_hotwords = ""
         self._hotword_file = ""
         self._hotword_sections = {}

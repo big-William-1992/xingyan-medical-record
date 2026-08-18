@@ -96,6 +96,10 @@ def wait_for_server(host, port, timeout=15):
 def main():
     import webview
 
+    # pywebview 的 macOS(WKWebView) 后端不支持 getUserMedia（麦克风）
+    # 语音录入功能需使用系统浏览器访问，这里做检测提示
+    _pywebview_media_supported = sys.platform != "darwin"
+
     port = find_free_port()
     local_ip = get_local_ip()
     local_url = f"http://{LOCAL_HOST}:{port}"
@@ -112,6 +116,7 @@ def main():
     ║     1. 确保手机和电脑连接同一WiFi                     ║
     ║     2. 手机浏览器打开上面的"手机访问"地址             ║
     ║     3. 建议添加到主屏幕（像App一样使用）              ║
+    ║  {'⚠️ 语音录入：macOS 桌面窗口不支持麦克风，请用浏览器打开 ║' if not _pywebview_media_supported else ''}
     ╚══════════════════════════════════════════════════════╝
     """)
 
@@ -127,6 +132,10 @@ def main():
 
     print(f"✅ 服务器就绪: {local_url}")
     print(f"📱 局域网访问: {lan_url}")
+    if not _pywebview_media_supported:
+        print("⚠️ macOS 桌面窗口不支持麦克风（pywebview WKWebView 限制）")
+        print("   语音录入请使用浏览器打开: " + local_url)
+        print("   或使用 PyQt5 桌面版: python gui/desktop_main.py（已支持麦克风）")
 
     # 创建原生窗口（使用本机地址）
     window = webview.create_window(
